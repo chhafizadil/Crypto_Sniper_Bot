@@ -1,4 +1,3 @@
-# utils/logger.py
 import os
 import logging
 from logging.handlers import RotatingFileHandler
@@ -49,7 +48,10 @@ def log_signal_to_csv(signal):
             "conditions": [", ".join(signal.get("conditions", []))],
             "volume": [signal.get("volume", 0)],
             "status": [signal.get("status", "pending")],
-            "hit_timestamp": [signal.get("hit_timestamp", None)]
+            "hit_timestamp": [signal.get("hit_timestamp", None)],
+            "tp1_hit": [False],  # Added for TP hit tracking
+            "tp2_hit": [False],
+            "tp3_hit": [False]
         })
 
         if os.path.exists(csv_path):
