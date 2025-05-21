@@ -14,7 +14,7 @@ import os
 
 class SignalPredictor:
     def __init__(self):
-        self.min_data_points = 50
+        self.min_data_points = 30  # Reduced from 50 to lower CPU usage
         logger.info("Signal Predictor initialized")
 
     def get_trade_duration(self, timeframe: str) -> str:
@@ -35,6 +35,7 @@ class SignalPredictor:
                 return 60.0, 40.0, 20.0
 
             df = pd.read_csv(file_path)
+            logger.info(f"[{symbol}] CSV columns: {df.columns.tolist()}")  # Log columns for debugging
             if 'symbol' not in df.columns:
                 logger.error(f"[{symbol}] 'symbol' column missing in signals_log_new.csv")
                 return 60.0, 40.0, 20.0
@@ -64,10 +65,11 @@ class SignalPredictor:
             tp1_distance = abs(tp1 - entry) / entry * 100
             tp2_distance = abs(tp2 - entry) / entry * 100
             tp3_distance = abs(tp3 - entry) / entry * 100
-            tp1_possibility *= min(1.0, 2.0 / max(tp1_distance, 0.01))  # Avoid division by zero
+            tp1_possibility *= min(1.0, 2.0 / max(tp1_distance, 0.01))
             tp2_possibility *= min(1.0, 3.0 / max(tp2_distance, 0.01))
             tp3_possibility *= min(1.0, 4.0 / max(tp3_distance, 0.01))
 
+            logger.info(f"[{symbol}] TP possibilities: TP1={tp1_possibility:.2f}%, TP2={tp2_possibility:.2f}%, TP3={tp3_possibility:.2f}%")
             return max(min(tp1_possibility, 95.0), 50.0), max(min(tp2_possibility, 80.0), 30.0), max(min(tp3_possibility, 60.0), 10.0)
         except Exception as e:
             logger.error(f"[{symbol}] Error calculating TP hit possibilities: {str(e)}")
@@ -159,64 +161,64 @@ class SignalPredictor:
 
             logger.info(f"[{symbol}] {timeframe} - Conditions: {', '.join(conditions) if conditions else 'None'}")
 
-            # Confidence calculation with weights logging
+            # Confidence calculation with adjusted weights
             confidence = 50.0
             weights = []
             if "Bullish MACD" in conditions or "Bearish MACD" in conditions:
-                confidence += 20.0
-                weights.append("MACD: +20")
+                confidence += 15.0  # Reduced from 20 to make confidence realistic
+                weights.append("MACD: +15")
             if "Bullish Engulfing" in conditions or "Bearish Engulfing" in conditions or "Hammer" in conditions or "Shooting Star" in conditions:
-                confidence += 15.0
-                weights.append("Candlestick: +15")
+                confidence += 12.0  # Reduced from 15
+                weights.append("Candlestick: +12")
             if "Strong Trend" in conditions:
-                confidence += 15.0
-                weights.append("ADX: +15")
+                confidence += 12.0  # Reduced from 15
+                weights.append("ADX: +12")
             if "Near Support" in conditions or "Near Resistance" in conditions:
-                confidence += 10.0
-                weights.append("S/R: +10")
+                confidence += 8.0  # Reduced from 10
+                weights.append("S/R: +8")
             if "High Volume" in conditions:
-                confidence += 10.0
-                weights.append("Volume: +10")
+                confidence += 8.0  # Reduced from 10
+                weights.append("Volume: +8")
             if "Oversold RSI" in conditions or "Overbought RSI" in conditions:
-                confidence += 10.0
-                weights.append("RSI: +10")
+                confidence += 8.0  # Reduced from 10
+                weights.append("RSI: +8")
             if "Three White Soldiers" in conditions or "Three Black Crows" in conditions:
-                confidence += 15.0
-                weights.append("Three Soldiers/Crows: +15")
+                confidence += 12.0  # Reduced from 15
+                weights.append("Three Soldiers/Crows: +12")
             if "Doji" in conditions:
                 confidence += 5.0
                 weights.append("Doji: +5")
             if "Above Bollinger Upper" in conditions or "Below Bollinger Lower" in conditions:
-                confidence += 10.0
-                weights.append("Bollinger: +10")
+                confidence += 8.0  # Reduced from 10
+                weights.append("Bollinger: +8")
             if "Oversold Stochastic" in conditions or "Overbought Stochastic" in conditions:
-                confidence += 10.0
-                weights.append("Stochastic: +10")
+                confidence += 8.0  # Reduced from 10
+                weights.append("Stochastic: +8")
             if "Above VWAP" in conditions or "Below VWAP" in conditions:
                 confidence += 5.0
                 weights.append("VWAP: +5")
 
-            confidence = min(confidence, 100.0)
+            confidence = min(confidence, 95.0)  # Cap confidence to avoid 100%
             logger.info(f"[{symbol}] {timeframe} - Confidence: {confidence:.2f}, Weights: {', '.join(weights) if weights else 'None'}")
 
-            # Direction logic
+            # Relaxed direction logic
             direction = None
             bullish_conditions = ["Bullish MACD", "Oversold RSI", "Bullish Engulfing", "Hammer", "Near Support", "Three White Soldiers", "Below Bollinger Lower", "Oversold Stochastic", "Above VWAP"]
             bearish_conditions = ["Bearish MACD", "Overbought RSI", "Bearish Engulfing", "Shooting Star", "Near Resistance", "Three Black Crows", "Above Bollinger Upper", "Overbought Stochastic", "Below VWAP"]
             bullish_count = sum(1 for c in conditions if c in bullish_conditions)
             bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            if bullish_count > bearish_count and confidence >= 65 and len(conditions) >= 3:
+            if bullish_count > bearish_count and confidence >= 60 and len(conditions) >= 2:  # Relaxed from 65 and 3
                 direction = "LONG"
-            elif bearish_count > bullish_count and confidence >= 65 and len(conditions) >= 3:
+            elif bearish_count > bullish_count and confidence >= 60 and len(conditions) >= 2:
                 direction = "SHORT"
 
             if not direction:
                 logger.info(f"[{symbol}] No clear direction: Bullish={bullish_count}, Bearish={bearish_count}, Confidence={confidence:.2f}, Conditions={len(conditions)}")
                 return None
 
-            # Calculate TP/SL
-            atr = max(latest.get('atr', 0.005 * current_price), 0.01 * current_price)  # Ensure ATR is at least 1% of price
+            # Calculate TP/SL with higher ATR fallback
+            atr = max(latest.get('atr', 0.005 * current_price), 0.02 * current_price)  # Increased from 0.01 to 0.02
             entry = round(current_price, 2)
             if direction == "LONG":
                 tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)
