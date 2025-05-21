@@ -2,7 +2,7 @@ import asyncio
 import ccxt.async_support as ccxt
 import pandas as pd
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
 from telebot.sender import send_signal, start_bot
