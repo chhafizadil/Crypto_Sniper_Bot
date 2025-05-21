@@ -38,7 +38,7 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
         timeframe_agreement = agreement_count / len(timeframes)
         logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)}")
 
-        if agreement_count < 1:  # 2 سے 1 تک کم کیا
+        if agreement_count < 2:  # 2 سے 1 تک کم کیا
             logger.info(f"[{symbol}] Insufficient timeframe agreement ({agreement_count}/{len(timeframes)})")
             return None
 
