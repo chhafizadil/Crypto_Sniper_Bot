@@ -9,7 +9,7 @@ import os
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook")
+WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"  # Hard-coded
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -154,10 +154,11 @@ async def send_signal(signal):
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {signal['timestamp']}"
         )
+        logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram")
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
         logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
     except Exception as e:
-        logger.error(f"Error sending signal to Telegram: {str(e)}")
+        logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
         raise
 
 async def start_bot():
