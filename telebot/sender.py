@@ -9,6 +9,7 @@ import os
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
+WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -164,17 +165,8 @@ async def start_bot():
         bot = telegram.Bot(token=BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Telegram webhook deleted successfully")
-        webhook_info = await bot.get_webhook_info()
-        if not webhook_info.url:
-            logger.info("Webhook confirmed deleted with no pending updates")
-        for _ in range(5):
-            try:
-                await bot.get_updates(offset=-1, timeout=5)
-                logger.info("Pending updates cleared via getUpdates")
-                break
-            except Conflict as e:
-                logger.warning(f"Conflict while clearing updates: {str(e)}")
-                await asyncio.sleep(3)
+        await bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("summary", summary))
@@ -184,13 +176,8 @@ async def start_bot():
         application.add_handler(CommandHandler("help", help))
         await application.initialize()
         await application.start()
-        await application.updater.start_polling(
-            drop_pending_updates=True,
-            poll_interval=4.0,
-            timeout=15,
-            error_callback=lambda e: logger.error(f"Polling error: {str(e)}")
-        )
-        logger.info("Telegram polling started successfully")
+        logger.info("Telegram webhook bot started successfully")
+        return application
     except Exception as e:
         logger.error(f"Error starting Telegram bot: {str(e)}")
         raise
