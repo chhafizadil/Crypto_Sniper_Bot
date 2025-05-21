@@ -86,7 +86,7 @@ async def process_symbol(symbol, exchange, timeframes):
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
-                signal['agreement'] = agreement
+                signal['agreement'] = 50
                 logger.info(f"[{symbol}] Attempting to send signal to Telegram")
                 await send_signal(signal)
                 save_signal_to_csv(signal)
