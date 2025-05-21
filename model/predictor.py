@@ -31,13 +31,13 @@ class SignalPredictor:
             file_path = 'logs/signals_log_new.csv'
             if not os.path.exists(file_path):
                 logger.warning(f"[{symbol}] No historical signals for TP hit calculation")
-                return 70.0, 50.0, 30.0
+                return 60.0, 40.0, 20.0  # Adjusted defaults
 
             df = pd.read_csv(file_path)
             df = df[df['symbol'] == symbol]
             if df.empty:
                 logger.warning(f"[{symbol}] No historical signals for this symbol")
-                return 70.0, 50.0, 30.0
+                return 60.0, 40.0, 20.0
 
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df = df[df['timestamp'] >= pd.Timestamp.now() - pd.Timedelta(days=30)]
@@ -45,16 +45,16 @@ class SignalPredictor:
 
             if df.empty:
                 logger.warning(f"[{symbol}] No recent signals for {direction}")
-                return 70.0, 50.0, 30.0
+                return 60.0, 40.0, 20.0
 
             tp1_hits = len(df[df['tp1_hit'] == True]) if 'tp1_hit' in df else 0
             tp2_hits = len(df[df['tp2_hit'] == True]) if 'tp2_hit' in df else 0
             tp3_hits = len(df[df['tp3_hit'] == True]) if 'tp3_hit' in df else 0
             total_signals = len(df)
 
-            tp1_possibility = (tp1_hits / total_signals * 100) if total_signals > 0 else 70.0
-            tp2_possibility = (tp2_hits / total_signals * 100) if total_signals > 0 else 50.0
-            tp3_possibility = (tp3_hits / total_signals * 100) if total_signals > 0 else 30.0
+            tp1_possibility = (tp1_hits / total_signals * 100) if total_signals > 0 else 60.0
+            tp2_possibility = (tp2_hits / total_signals * 100) if total_signals > 0 else 40.0
+            tp3_possibility = (tp3_hits / total_signals * 100) if total_signals > 0 else 20.0
 
             tp1_distance = abs(tp1 - entry) / entry * 100
             tp2_distance = abs(tp2 - entry) / entry * 100
@@ -66,7 +66,7 @@ class SignalPredictor:
             return max(min(tp1_possibility, 95.0), 50.0), max(min(tp2_possibility, 80.0), 30.0), max(min(tp3_possibility, 60.0), 10.0)
         except Exception as e:
             logger.error(f"[{symbol}] Error calculating TP hit possibilities: {str(e)}")
-            return 70.0, 50.0, 30.0
+            return 60.0, 40.0, 20.0
 
     async def predict_signal(self, symbol: str, df: pd.DataFrame, timeframe: str) -> dict:
         try:
@@ -154,57 +154,56 @@ class SignalPredictor:
 
             logger.info(f"[{symbol}] {timeframe} - Conditions: {', '.join(conditions) if conditions else 'None'}")
 
-            # Confidence calculation
+            # Confidence calculation with weights logging
             confidence = 50.0
+            weights = []
             if "Bullish MACD" in conditions or "Bearish MACD" in conditions:
                 confidence += 20.0
+                weights.append("MACD: +20")
             if "Bullish Engulfing" in conditions or "Bearish Engulfing" in conditions or "Hammer" in conditions or "Shooting Star" in conditions:
                 confidence += 15.0
+                weights.append("Candlestick: +15")
             if "Strong Trend" in conditions:
-                confidence += 15.0  # Increased weight
+                confidence += 15.0
+                weights.append("ADX: +15")
             if "Near Support" in conditions or "Near Resistance" in conditions:
                 confidence += 10.0
+                weights.append("S/R: +10")
             if "High Volume" in conditions:
                 confidence += 10.0
+                weights.append("Volume: +10")
             if "Oversold RSI" in conditions or "Overbought RSI" in conditions:
-                confidence += 10.0  # Increased weight
+                confidence += 10.0
+                weights.append("RSI: +10")
             if "Three White Soldiers" in conditions or "Three Black Crows" in conditions:
                 confidence += 15.0
+                weights.append("Three Soldiers/Crows: +15")
             if "Doji" in conditions:
                 confidence += 5.0
+                weights.append("Doji: +5")
             if "Above Bollinger Upper" in conditions or "Below Bollinger Lower" in conditions:
                 confidence += 10.0
+                weights.append("Bollinger: +10")
             if "Oversold Stochastic" in conditions or "Overbought Stochastic" in conditions:
-                confidence += 10.0  # Increased weight
+                confidence += 10.0
+                weights.append("Stochastic: +10")
             if "Above VWAP" in conditions or "Below VWAP" in conditions:
                 confidence += 5.0
+                weights.append("VWAP: +5")
 
             confidence = min(confidence, 100.0)
+            logger.info(f"[{symbol}] {timeframe} - Confidence: {confidence:.2f}, Weights: {', '.join(weights) if weights else 'None'}")
 
-            # Direction logic with strict conflict resolution
+            # Direction logic
             direction = None
             bullish_conditions = ["Bullish MACD", "Oversold RSI", "Bullish Engulfing", "Hammer", "Near Support", "Three White Soldiers", "Below Bollinger Lower", "Oversold Stochastic", "Above VWAP"]
             bearish_conditions = ["Bearish MACD", "Overbought RSI", "Bearish Engulfing", "Shooting Star", "Near Resistance", "Three Black Crows", "Above Bollinger Upper", "Overbought Stochastic", "Below VWAP"]
             bullish_count = sum(1 for c in conditions if c in bullish_conditions)
             bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            # Strict conflict resolution
-            if "Three Black Crows" in conditions:
-                logger.warning(f"[{symbol}] Three Black Crows detected, blocking LONG signal")
-                bullish_count = 0  # Block LONG signals
-            if "Three White Soldiers" in conditions:
-                logger.warning(f"[{symbol}] Three White Soldiers detected, blocking SHORT signal")
-                bearish_count = 0  # Block SHORT signals
-            if "Overbought RSI" in conditions and any(c in conditions for c in ["Bullish MACD", "Oversold Stochastic"]):
-                logger.warning(f"[{symbol}] Conflicting conditions: Overbought RSI with bullish indicators, skipping LONG")
-                bullish_count -= 2
-            if "Oversold RSI" in conditions and any(c in conditions for c in ["Bearish MACD", "Overbought Stochastic"]):
-                logger.warning(f"[{symbol}] Conflicting conditions: Oversold RSI with bearish indicators, skipping SHORT")
-                bearish_count -= 2
-
-            if bullish_count > bearish_count + 1 and confidence >= 75 and len(conditions) >= 5:  # Lowered threshold to 5
+            if bullish_count > bearish_count and confidence >= 65 and len(conditions) >= 3:  # Relaxed thresholds
                 direction = "LONG"
-            elif bearish_count > bullish_count + 1 and confidence >= 75 and len(conditions) >= 5:
+            elif bearish_count > bullish_count and confidence >= 65 and len(conditions) >= 3:
                 direction = "SHORT"
 
             if not direction:
@@ -212,7 +211,7 @@ class SignalPredictor:
                 return None
 
             # Calculate TP/SL
-            atr = latest.get('atr', max(0.1 * current_price, 0.02))
+            atr = latest.get('atr', max(0.005 * current_price, 0.02))  # Minimum ATR 0.5%
             entry = round(current_price, 2)
             if direction == "LONG":
                 tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)
