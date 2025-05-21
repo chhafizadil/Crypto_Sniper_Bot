@@ -5,11 +5,9 @@ import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot import send_signal  # Import from telebot.py
+from telebot.sender import send_signal, start_bot  # From telebot/sender.py
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
-from telegram import Bot
-from telebot import start_bot  # Import start_bot for webhook setup
 
 app = FastAPI()
 
@@ -34,7 +32,7 @@ async def health_check():
     return {"status": "healthy"}
 
 MIN_QUOTE_VOLUME = 100000
-MIN_CONFIDENCE = 70  # Lowered from 80
+MIN_CONFIDENCE = 60  # Match old bot
 COOLDOWN_HOURS = 4
 
 cooldowns = {}
@@ -84,7 +82,7 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 60:  # Lowered from 70
+            if agreement >= 50:  # Lowered to match old bot
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
