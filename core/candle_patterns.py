@@ -4,6 +4,7 @@ from utils.logger import logger
 def is_bullish_engulfing(df):
     try:
         if len(df) < 2:
+            logger.warning("Insufficient data for bullish engulfing")
             return [False] * len(df)
         prev_candle = df.shift(1)
         conditions = (
@@ -21,6 +22,7 @@ def is_bullish_engulfing(df):
 def is_bearish_engulfing(df):
     try:
         if len(df) < 2:
+            logger.warning("Insufficient data for bearish engulfing")
             return [False] * len(df)
         prev_candle = df.shift(1)
         conditions = (
@@ -83,9 +85,13 @@ def is_shooting_star(df):
 def is_three_white_soldiers(df):
     try:
         if len(df) < 3:
+            logger.warning("Insufficient data for three white soldiers")
             return [False] * len(df)
         candle_1 = df.shift(2)
         candle_2 = df.shift(1)
+        # Additional checks: volume and candle size
+        avg_volume = df['volume'].rolling(window=20).mean()
+        min_candle_size = (df['high'] - df['low']).mean() * 0.5
         conditions = (
             (candle_1['close'] > candle_1['open']) &
             (candle_2['close'] > candle_2['open']) &
@@ -93,7 +99,9 @@ def is_three_white_soldiers(df):
             (candle_2['close'] > candle_1['close']) &
             (df['close'] > candle_2['close']) &
             (candle_2['open'] > candle_1['open']) &
-            (df['open'] > candle_2['open'])
+            (df['open'] > candle_2['open']) &
+            (df['volume'] > avg_volume) &  # Volume confirmation
+            ((df['close'] - df['open']) > min_candle_size)  # Minimum candle size
         )
         logger.info("Three white soldiers pattern calculated")
         return conditions
@@ -104,9 +112,13 @@ def is_three_white_soldiers(df):
 def is_three_black_crows(df):
     try:
         if len(df) < 3:
+            logger.warning("Insufficient data for three black crows")
             return [False] * len(df)
         candle_1 = df.shift(2)
         candle_2 = df.shift(1)
+        # Additional checks: volume and candle size
+        avg_volume = df['volume'].rolling(window=20).mean()
+        min_candle_size = (df['high'] - df['low']).mean() * 0.5
         conditions = (
             (candle_1['close'] < candle_1['open']) &
             (candle_2['close'] < candle_2['open']) &
@@ -114,7 +126,9 @@ def is_three_black_crows(df):
             (candle_2['close'] < candle_1['close']) &
             (df['close'] < candle_2['close']) &
             (candle_2['open'] < candle_1['open']) &
-            (df['open'] < candle_2['open'])
+            (df['open'] < candle_2['open']) &
+            (df['volume'] > avg_volume) &  # Volume confirmation
+            ((df['open'] - df['close']) > min_candle_size)  # Minimum candle size
         )
         logger.info("Three black crows pattern calculated")
         return conditions
