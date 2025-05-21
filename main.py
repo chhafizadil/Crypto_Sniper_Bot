@@ -10,6 +10,14 @@ from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
 
 app = FastAPI()
+# Yeh function webhook ke liye add kar dein:
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    print("📩 Telegram Update:", data)
+    return {"ok": True}
+
+# Baaki aapka existing code yahan rahega...
 
 MIN_QUOTE_VOLUME = 500000
 MIN_CONFIDENCE = 80
