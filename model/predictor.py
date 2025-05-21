@@ -19,6 +19,7 @@ class SignalPredictor:
 
     def get_trade_duration(self, timeframe: str) -> str:
         durations = {
+            '5m': 'Up to 1 hour',
             '15m': 'Up to 1 hour',
             '1h': 'Up to 6 hours',
             '4h': 'Up to 24 hours',
