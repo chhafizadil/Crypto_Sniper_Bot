@@ -1,4 +1,3 @@
-# Updated telebot/sender.py with new signal format, daily report format, and additional bot commands
 import telegram
 import asyncio
 import pandas as pd
@@ -8,9 +7,8 @@ from utils.logger import logger
 from datetime import datetime, timedelta
 import os
 
-# Hard-coded Telegram bot token and chat ID
-BOT_TOKEN = "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU"
-CHAT_ID = "-4694205383"
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -72,17 +70,13 @@ async def generate_daily_summary():
         if not os.path.exists(file_path):
             logger.warning("Signals log file not found")
             return None
-
         df = pd.read_csv(file_path)
         today = datetime.now().strftime('%Y-%m-%d')
-        today = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
-
         if df_today.empty:
             logger.info("No signals found for today")
             return None
-
         total_signals = len(df_today)
         long_signals = len(df_today[df_today['direction'] == 'Long'])
         short_signals = len(df_today[df_today['direction'] == 'Short'])
@@ -98,11 +92,9 @@ async def generate_daily_summary():
         tp2_hits = len(df_today[df_today.get('tp2_hit', False) == True]) if 'tp2_hit' in df_today else 0
         tp3_hits = len(df_today[df_today.get('tp3_hit', False) == True]) if 'tp3_hit' in df_today else 0
         sl_hits = len(df_today[df_today.get('sl_hit', False) == True]) if 'sl_hit' in df_today else 0
-
         report = (
             f"📊 *Daily Trading Summary ({today})*\n"
             f"📈 Total Signals: {total_signals}\n"
-            f"📅 today's Signals: {len(df_today)}\n"
             f"🚀 Long Signals: {long_signals}\n"
             f"📉 Short Signals: {short_signals}\n"
             f"🎯 Successful Signals: {successful_signals} ({successful_percentage:.2f}%)\n"
@@ -165,6 +157,7 @@ async def send_signal(signal):
         logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
     except Exception as e:
         logger.error(f"Error sending signal to Telegram: {str(e)}")
+        raise
 
 async def start_bot():
     try:
@@ -200,3 +193,4 @@ async def start_bot():
         logger.info("Telegram polling started successfully")
     except Exception as e:
         logger.error(f"Error starting Telegram bot: {str(e)}")
+        raise
