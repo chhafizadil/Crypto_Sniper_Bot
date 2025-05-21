@@ -1,4 +1,3 @@
-# Updated core/analysis.py to simplify logging, lower timeframe agreement to 15%, and ensure final signal format
 import pandas as pd
 import asyncio
 import ccxt.async_support as ccxt
@@ -31,17 +30,25 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
         valid_signals = [s for s in signals.values() if s is not None]
         if not valid_signals:
             logger.info(f"[{symbol}] No valid signals across any timeframe")
-            return signals
+            return None
 
         directions = [s['direction'] for s in valid_signals]
-        if directions:
-            timeframe_agreement = len([d for d in directions if d == directions[0]]) / len(directions)
-            logger.info(f"[{symbol}] Timeframe agreement: {timeframe_agreement:.2f}")
-            if timeframe_agreement < 0.15:  # Lowered to 15%
-                logger.info(f"[{symbol}] Insufficient timeframe agreement ({timeframe_agreement:.2f})")
-                return signals
-        return signals
+        agreement_count = len([d for d in directions if d == directions[0]])
+        timeframe_agreement = agreement_count / len(timeframes)
+        logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)}")
+
+        if agreement_count < 2:  # Require 2/4 timeframe agreement
+            logger.info(f"[{symbol}] Insufficient timeframe agreement ({agreement_count}/{len(timeframes)})")
+            return None
+
+        # Select signal from 1h timeframe if available, otherwise highest timeframe
+        selected_timeframe = '1h' if signals.get('1h') else max([t for t in signals if signals[t]], key=lambda x: timeframes.index(x))
+        final_signal = signals[selected_timeframe]
+        if final_signal:
+            final_signal['agreement'] = timeframe_agreement * 100
+            logger.info(f"[{symbol}] Selected signal from {selected_timeframe} with agreement {final_signal['agreement']:.2f}%")
+        return final_signal
 
     except Exception as e:
         logger.error(f"[{symbol}] Error in multi-timeframe analysis: {str(e)}")
-        return {}
+        return None
