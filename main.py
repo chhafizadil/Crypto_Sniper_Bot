@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot.sender import send_signal, start_bot  # From telebot/sender.py
+from telebot.sender import send_signal, start_bot
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
 
@@ -32,7 +32,7 @@ async def health_check():
     return {"status": "healthy"}
 
 MIN_QUOTE_VOLUME = 1000000
-MIN_CONFIDENCE = 50  # Match old bot
+MIN_CONFIDENCE = 50
 COOLDOWN_HOURS = 4
 
 cooldowns = {}
@@ -82,7 +82,7 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 50:  # Lowered to match old bot
+            if agreement >= 50:
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
@@ -139,7 +139,7 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['15m', '1h', '4h', '1d']
+        timeframes = ['1h', '4h', '1d']  # Removed 15m to reduce CPU
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
