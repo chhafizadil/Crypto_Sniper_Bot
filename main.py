@@ -22,7 +22,7 @@ async def health_check():
     return {"status": "healthy"}
 
 MIN_QUOTE_VOLUME = 500000
-MIN_CONFIDENCE = 80
+MIN_CONFIDENCE = 70  # Reduced from 80 to allow more signals
 COOLDOWN_HOURS = 2
 
 cooldowns = {}
@@ -31,9 +31,17 @@ def save_signal_to_csv(signal):
     try:
         os.makedirs('logs', exist_ok=True)
         file_path = 'logs/signals_log_new.csv'
-        df = pd.DataFrame([signal])
-        df.to_csv(file_path, mode='a', index=False, 
-                  header=not os.path.exists(file_path))
+        # Ensure all required columns are present
+        required_columns = [
+            'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
+            'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
+            'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
+            'status', 'hit_timestamp'
+        ]
+        signal_dict = {col: signal.get(col, None) for col in required_columns}
+        signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
+        df = pd.DataFrame([signal_dict])
+        df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
         logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
     except Exception as e:
         logger.error(f"Error saving signal to CSV for {signal['symbol']}: {str(e)}")
@@ -70,7 +78,7 @@ async def process_symbol(symbol, exchange, timeframes):
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
                 signal['agreement'] = agreement
-                await send_signal(signal)
+                await send_signal(signal)  # Ensure signal is sent to Telegram
                 save_signal_to_csv(signal)
                 update_cooldown(symbol)
                 logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Entry: {signal['entry']:.2f}, TP1: {signal['tp1']:.2f}, TP2: {signal['tp2']:.2f}, TP3: {signal['tp3']:.2f}, SL: {signal['sl']:.2f}, Conditions: {', '.join(signal['conditions'])})")
