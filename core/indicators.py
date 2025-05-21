@@ -11,7 +11,7 @@ def calculate_indicators(df):
         df = df.copy()
 
         # Validate input data
-        if len(df) < 50 or df[['open', 'high', 'low', 'close', 'volume']].isnull().any().any():
+        if len(df) < 30 or df[['open', 'high', 'low', 'close', 'volume']].isnull().any().any():  # Reduced from 50 to 30
             logger.warning("Invalid or insufficient input data for indicators")
             return df
 
@@ -28,10 +28,10 @@ def calculate_indicators(df):
         df['volume_sma_20'] = df['volume'].rolling(window=20, min_periods=1).mean()
 
         # MACD (manual calculation to avoid zero values)
-        scaled_close = df['close'] * 1000  # Scale prices to avoid precision issues
+        scaled_close = df['close'] * 1000
         ema_fast = calculate_ema(scaled_close, 12)
         ema_slow = calculate_ema(scaled_close, 26)
-        df['macd'] = (ema_fast - ema_slow) / 1000  # Revert scaling
+        df['macd'] = (ema_fast - ema_slow) / 1000
         df['macd_signal'] = calculate_ema(df['macd'], 9)
         if df['macd'].abs().mean() < 1e-5:
             logger.warning("MACD values near zero, possible data issue")
@@ -43,14 +43,14 @@ def calculate_indicators(df):
         tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         df['atr'] = tr.rolling(window=14).mean()
 
-        # ADX
+        # ADX with capping
         plus_dm = df['high'].diff().where(df['high'].diff() > df['low'].diff(), 0)
         minus_dm = (-df['low'].diff()).where(df['low'].diff() < df['high'].diff(), 0)
         tr = tr.rolling(window=14).sum()
         plus_di = 100 * (plus_dm.rolling(window=14).sum() / tr)
         minus_di = 100 * (minus_dm.rolling(window=14).sum() / tr)
         dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di))
-        df['adx'] = dx.rolling(window=14).mean()
+        df['adx'] = np.clip(dx.rolling(window=14).mean(), 0, 100)  # Cap ADX between 0 and 100
 
         # Bollinger Bands
         sma_20 = df['close'].rolling(window=20).mean()
