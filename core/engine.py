@@ -35,7 +35,7 @@ async def run_engine():
 
         logger.info("[Engine] Initializing Telegram bot")
         try:
-            bot = Bot( token=os.getenv("TELEGRAM_BOT_TOKEN"))
+            bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
             logger.info("[Engine] Telegram bot initialized")
         except Exception as e:
             logger.error(f"[Engine] Error initializing Telegram bot: {str(e)}")
@@ -62,28 +62,26 @@ async def run_engine():
             logger.error(f"[Engine] Error loading markets: {str(e)}")
             return
 
-        for symbol in symbols[:5]:  # Limit to 5 symbols for testing
+        for symbol in symbols[:10]:  # Increased to 10 symbols for broader analysis
             memory_before = psutil.Process().memory_info().rss / 1024 / 1024
             cpu_percent = psutil.cpu_percent(interval=0.1)
             logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
 
-            logger.info(f"[Engine] [{symbol}] Checking whale activity")
+            # Check volume
             try:
-                ohlcv = await exchange.fetch_ohlcv(symbol, "1h", limit=100)
-                df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"], dtype="float32")
-                logger.info(f"[Engine] [{symbol}] OHLCV fetched")
+                ticker = await exchange.fetch_ticker(symbol)
+                quote_volume_24h = ticker.get('quoteVolume', 0)
+                if quote_volume_24h < 100000:  # Lowered from $500,000
+                    logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
+                    continue
             except Exception as e:
-                logger.error(f"[Engine] [{symbol}] Error fetching OHLCV: {str(e)}")
-                continue
-
-            if not detect_whale_activity(symbol, df):
-                logger.info(f"[Engine] [{symbol}] No whale activity detected")
+                logger.error(f"[Engine] [{symbol}] Error fetching ticker: {str(e)}")
                 continue
 
             logger.info(f"[Engine] [{symbol}] Analyzing symbol")
             try:
                 signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
-                if signal and signal["confidence"] >= 80 and signal["tp1_possibility"] >= 70:
+                if signal and signal["confidence"] >= 75 and signal["tp1_possibility"] >= 70:  # Lowered confidence to 75
                     message = (
                         f"🚨 {signal['symbol']} Signal\n"
                         f"Timeframe: {signal['timeframe']}\n"
@@ -93,7 +91,8 @@ async def run_engine():
                         f"TP1: {signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
                         f"TP2: {signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
                         f"TP3: {signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
-                        f"SL: {signal['sl']:.2f}"
+                        f"SL: {signal['sl']:.2f}\n"
+                        f"Conditions: {', '.join(signal['conditions'])}"
                     )
                     logger.info(f"[Engine] [{symbol}] Signal generated, sending to Telegram")
                     try:
@@ -107,7 +106,7 @@ async def run_engine():
                     signal_df.to_csv(f"{logs_dir}/signals_log_new.csv", mode="a", header=not os.path.exists(f"{logs_dir}/signals_log_new.csv"), index=False)
                     logger.info(f"[Engine] [{symbol}] Signal saved to CSV")
                 else:
-                    logger.info(f"[Engine] [{symbol}] No valid signal")
+                    logger.info(f"[Engine] [{symbol}] No valid signal (Confidence: {signal['confidence'] if signal else 'None'}%)")
             except Exception as e:
                 logger.error(f"[Engine] [{symbol}] Error analyzing symbol: {str(e)}")
                 continue
