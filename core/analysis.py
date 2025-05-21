@@ -14,7 +14,7 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
             try:
                 logger.info(f"[{symbol}] Fetching OHLCV data for {timeframe}")
                 df = await fetch_realtime_data(symbol, timeframe, limit=50)
-                if df is None or len(df) < 50:
+                if df is None or len(df) < 30:  # 50 سے 30 تک کم کیا
                     logger.warning(f"[{symbol}] Insufficient data for {timeframe}: {len(df) if df is not None else 'None'}")
                     signals[timeframe] = None
                     continue
@@ -22,6 +22,7 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
                 logger.info(f"[{symbol}] OHLCV data fetched for {timeframe}: {len(df)} rows")
                 signal = await predictor.predict_signal(symbol, df, timeframe)
                 signals[timeframe] = signal
+                logger.info(f"[{symbol}] Signal for {timeframe}: {signal}")
             except Exception as e:
                 logger.error(f"[{symbol}] Error analyzing {timeframe}: {str(e)}")
                 signals[timeframe] = None
@@ -37,12 +38,12 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
         timeframe_agreement = agreement_count / len(timeframes)
         logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)}")
 
-        if agreement_count < 2:  # Require 2/4 timeframe agreement
+        if agreement_count < 1:  # 2 سے 1 تک کم کیا
             logger.info(f"[{symbol}] Insufficient timeframe agreement ({agreement_count}/{len(timeframes)})")
             return None
 
-        # Select signal from 1h timeframe if available, otherwise highest timeframe
-        selected_timeframe = '1h' if signals.get('1h') else max([t for t in signals if signals[t]], key=lambda x: timeframes.index(x))
+        valid_timeframes = [t for t in signals if signals[t] is not None]
+        selected_timeframe = '1h' if '1h' in valid_timeframes else valid_timeframes[0]
         final_signal = signals[selected_timeframe]
         if final_signal:
             final_signal['agreement'] = timeframe_agreement * 100
