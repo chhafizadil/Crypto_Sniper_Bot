@@ -12,19 +12,27 @@ from telegram import Bot
 
 app = FastAPI()
 
+@app.get("/")
+async def root():
+    return {"message": "Crypto Signal Bot is running. Use /health for status or /webhook for Telegram updates."}
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    data = await request.json()
-    logger.info(f"Telegram Update: {data}")
-    return {"ok": True}
+    try:
+        data = await request.json()
+        logger.info(f"Telegram Update: {data}")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        return {"ok": False}
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000  # Reduced to allow more symbols
-MIN_CONFIDENCE = 80  # Increased for stronger signals
-COOLDOWN_HOURS = 4  # Increased to prevent multiple signals
+MIN_QUOTE_VOLUME = 100000
+MIN_CONFIDENCE = 75  # Reduced from 80 for more signals
+COOLDOWN_HOURS = 4
 
 cooldowns = {}
 
@@ -73,46 +81,53 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 70:  # Increased for stronger agreement
+            if agreement >= 65:  # Reduced from 70 for more signals
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
                 signal['agreement'] = agreement
+                logger.info(f"[{symbol}] Attempting to send signal to Telegram")
                 await send_signal(signal)
                 save_signal_to_csv(signal)
                 update_cooldown(symbol)
-                logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%, Entry: {signal['entry']:.2f}, TP1: {signal['tp1']:.2f}, TP2: {signal['tp2']:.2f}, TP3: {signal['tp3']:.2f}, SL: {signal['sl']:.2f}, Conditions: {', '.join(signal['conditions'])})")
+                logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {str(e)}")
 
 async def get_high_volume_symbols(exchange, min_volume):
-    symbols = [s for s in exchange.symbols if s.endswith('/USDT')]
-    high_volume_symbols = []
-    async def fetch_ticker(symbol):
-        try:
-            ticker = await exchange.fetch_ticker(symbol)
-            quote_volume = ticker.get('quoteVolume', 0)
-            close_price = ticker.get('close', 0)
-            if quote_volume is not None and quote_volume >= min_volume and close_price > 0.01:
-                return symbol, quote_volume
-            else:
-                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume:,.2f} < ${min_volume:,.0f}) or zero price ({close_price})")
+    try:
+        await exchange.load_markets(reload=True)
+        symbols = [s for s in exchange.markets.keys() if s.endswith('/USDT')]
+        logger.info(f"[Main] Loaded {len(symbols)} USDT pairs")
+        high_volume_symbols = []
+        async def fetch_ticker(symbol):
+            try:
+                ticker = await exchange.fetch_ticker(symbol)
+                quote_volume = float(ticker.get('quoteVolume', 0) or 0)
+                close_price = float(ticker.get('close', 0) or 0)
+                if quote_volume >= min_volume and 0.00001 < close_price < 100000:
+                    return symbol, quote_volume
+                else:
+                    logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume:,.2f} < ${min_volume:,.0f}) or invalid price ({close_price})")
+                    return None
+            except Exception as e:
+                logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
                 return None
-        except Exception as e:
-            logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
-            return None
-    batch_size = 25
-    for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i + batch_size]
-        tasks = [fetch_ticker(symbol) for symbol in batch]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
-            if isinstance(result, tuple):
-                symbol, quote_volume = result
-                high_volume_symbols.append(symbol)
-                logger.info(f"[{symbol}] Passed volume filter: ${quote_volume:,.2f} >= ${min_volume:,.0f}")
-        await asyncio.sleep(3)
-    return high_volume_symbols
+        batch_size = 25
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i + batch_size]
+            tasks = [fetch_ticker(symbol) for symbol in batch]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, tuple):
+                    symbol, quote_volume = result
+                    high_volume_symbols.append(symbol)
+                    logger.info(f"[{symbol}] Passed volume filter: ${quote_volume:,.2f} >= ${min_volume:,.0f}")
+            await asyncio.sleep(3)
+        return high_volume_symbols
+    except Exception as e:
+        logger.error(f"[Main] Error loading markets: {str(e)}")
+        return []
 
 async def main_loop():
     try:
@@ -121,7 +136,6 @@ async def main_loop():
             'secret': os.getenv('BINANCE_API_SECRET'),
             'enableRateLimit': True
         })
-        await exchange.load_markets()
         logger.info("Binance API connection successful")
         timeframes = ['15m', '1h', '4h', '1d']
         while True:
@@ -149,11 +163,15 @@ async def main_loop():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting bot...")
-    bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(url="https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook")
-    logger.info("Webhook set successfully")
-    asyncio.create_task(main_loop())
+    try:
+        bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+        await bot.delete_webhook(drop_pending_updates=True)
+        webhook_url = "https://married-elissa-individual-personal-5ae3052a.koyeb.app/webhook"
+        await bot.set_webhook(url=webhook_url)
+        logger.info("Webhook set successfully")
+        asyncio.create_task(main_loop())
+    except Exception as e:
+        logger.error(f"Error setting webhook: {str(e)}")
 
 async def test_analysis():
     symbol = "ADA/USDT"
