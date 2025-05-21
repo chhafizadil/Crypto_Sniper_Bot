@@ -5,9 +5,10 @@ import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot.sender import send_signal, start_bot
+from telebot.sender import send_signal
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
+from telegram import Bot
 
 app = FastAPI()
 
@@ -21,9 +22,9 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 500000
-MIN_CONFIDENCE = 70  # Reduced from 80 to allow more signals
-COOLDOWN_HOURS = 2
+MIN_QUOTE_VOLUME = 100000  # Reduced to allow more symbols
+MIN_CONFIDENCE = 80  # Increased for stronger signals
+COOLDOWN_HOURS = 4  # Increased to prevent multiple signals
 
 cooldowns = {}
 
@@ -31,7 +32,6 @@ def save_signal_to_csv(signal):
     try:
         os.makedirs('logs', exist_ok=True)
         file_path = 'logs/signals_log_new.csv'
-        # Ensure all required columns are present
         required_columns = [
             'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
@@ -73,15 +73,15 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 50:
+            if agreement >= 70:  # Increased for stronger agreement
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
                 signal['agreement'] = agreement
-                await send_signal(signal)  # Ensure signal is sent to Telegram
+                await send_signal(signal)
                 save_signal_to_csv(signal)
                 update_cooldown(symbol)
-                logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Entry: {signal['entry']:.2f}, TP1: {signal['tp1']:.2f}, TP2: {signal['tp2']:.2f}, TP3: {signal['tp3']:.2f}, SL: {signal['sl']:.2f}, Conditions: {', '.join(signal['conditions'])})")
+                logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%, Entry: {signal['entry']:.2f}, TP1: {signal['tp1']:.2f}, TP2: {signal['tp2']:.2f}, TP3: {signal['tp3']:.2f}, SL: {signal['sl']:.2f}, Conditions: {', '.join(signal['conditions'])})")
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {str(e)}")
 
@@ -149,7 +149,10 @@ async def main_loop():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting bot...")
-    asyncio.create_task(start_bot())
+    bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(url="https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook")
+    logger.info("Webhook set successfully")
     asyncio.create_task(main_loop())
 
 async def test_analysis():
