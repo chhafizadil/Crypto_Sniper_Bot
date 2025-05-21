@@ -10,18 +10,20 @@ from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
 
 app = FastAPI()
-# Yeh function webhook ke liye add kar dein:
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
-    print("📩 Telegram Update:", data)
+    logger.info(f"Telegram Update: {data}")
     return {"ok": True}
 
-# Baaki aapka existing code yahan rahega...
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
 
 MIN_QUOTE_VOLUME = 500000
 MIN_CONFIDENCE = 80
-COOLDOWN_HOURS = 2  # Reduced for stronger signals
+COOLDOWN_HOURS = 2
 
 cooldowns = {}
 
@@ -63,7 +65,7 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 50:  # 2/4 timeframes
+            if agreement >= 50:
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
@@ -142,10 +144,6 @@ async def startup_event():
     asyncio.create_task(start_bot())
     asyncio.create_task(main_loop())
 
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
-
 async def test_analysis():
     symbol = "ADA/USDT"
     exchange = ccxt.binance({"enableRateLimit": True})
@@ -156,4 +154,5 @@ async def test_analysis():
     await exchange.close()
 
 if __name__ == "__main__":
-    asyncio.run(test_analysis())
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
