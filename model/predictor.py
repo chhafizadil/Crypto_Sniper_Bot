@@ -84,7 +84,7 @@ class SignalPredictor:
 
             latest = df.iloc[-1]
             conditions = []
-            logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.2f}, MACD Signal: {latest['macd_signal']:.2f}, ADX: {latest['adx']:.2f}, Close: {latest['close']:.2f}")
+            logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.4f}, MACD Signal: {latest['macd_signal']:.4f}, ADX: {latest['adx']:.2f}, Close: {latest['close']:.2f}")
 
             # RSI conditions
             if latest['rsi'] < 30:
@@ -92,14 +92,14 @@ class SignalPredictor:
             elif latest['rsi'] > 70:
                 conditions.append("Overbought RSI")
 
-            # MACD conditions (mandatory non-zero)
+            # MACD conditions
             if abs(latest['macd']) < 1e-5:
-                logger.warning(f"[{symbol}] MACD near zero, skipping signal")
-                return None
-            if latest['macd'] > latest['macd_signal'] and latest['macd'] > 0:
-                conditions.append("Bullish MACD")
-            elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
-                conditions.append("Bearish MACD")
+                logger.warning(f"[{symbol}] MACD near zero, relying on RSI/ADX")
+            else:
+                if latest['macd'] > latest['macd_signal'] and latest['macd'] > 0:
+                    conditions.append("Bullish MACD")
+                elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
+                    conditions.append("Bearish MACD")
 
             # ADX condition
             if latest['adx'] > 25:
@@ -157,17 +157,17 @@ class SignalPredictor:
             # Confidence calculation
             confidence = 50.0
             if "Bullish MACD" in conditions or "Bearish MACD" in conditions:
-                confidence += 20.0  # Increased weight for MACD
+                confidence += 20.0
             if "Bullish Engulfing" in conditions or "Bearish Engulfing" in conditions or "Hammer" in conditions or "Shooting Star" in conditions:
                 confidence += 15.0
             if "Strong Trend" in conditions:
-                confidence += 10.0
+                confidence += 15.0  # Increased weight
             if "Near Support" in conditions or "Near Resistance" in conditions:
                 confidence += 10.0
             if "High Volume" in conditions:
                 confidence += 10.0
             if "Oversold RSI" in conditions or "Overbought RSI" in conditions:
-                confidence += 5.0
+                confidence += 10.0  # Increased weight
             if "Three White Soldiers" in conditions or "Three Black Crows" in conditions:
                 confidence += 15.0
             if "Doji" in conditions:
@@ -175,52 +175,50 @@ class SignalPredictor:
             if "Above Bollinger Upper" in conditions or "Below Bollinger Lower" in conditions:
                 confidence += 10.0
             if "Oversold Stochastic" in conditions or "Overbought Stochastic" in conditions:
-                confidence += 5.0
+                confidence += 10.0  # Increased weight
             if "Above VWAP" in conditions or "Below VWAP" in conditions:
                 confidence += 5.0
 
             confidence = min(confidence, 100.0)
 
-            # Direction logic with conflict resolution
+            # Direction logic with strict conflict resolution
             direction = None
             bullish_conditions = ["Bullish MACD", "Oversold RSI", "Bullish Engulfing", "Hammer", "Near Support", "Three White Soldiers", "Below Bollinger Lower", "Oversold Stochastic", "Above VWAP"]
             bearish_conditions = ["Bearish MACD", "Overbought RSI", "Bearish Engulfing", "Shooting Star", "Near Resistance", "Three Black Crows", "Above Bollinger Upper", "Overbought Stochastic", "Below VWAP"]
             bullish_count = sum(1 for c in conditions if c in bullish_conditions)
             bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            # Conflict resolution
-            if "Overbought RSI" in conditions and "Bullish MACD" in conditions:
-                logger.warning(f"[{symbol}] Conflicting conditions: Overbought RSI with Bullish MACD, skipping LONG")
-                conditions.remove("Bullish MACD")
-                bullish_count -= 1
-            if "Oversold RSI" in conditions and "Bearish MACD" in conditions:
-                logger.warning(f"[{symbol}] Conflicting conditions: Oversold RSI with Bearish MACD, skipping SHORT")
-                conditions.remove("Bearish MACD")
-                bearish_count -= 1
-            if "Three Black Crows" in conditions and any(c in conditions for c in bullish_conditions):
-                logger.warning(f"[{symbol}] Conflicting conditions: Three Black Crows with bullish conditions, skipping LONG")
-                return None
-            if "Three White Soldiers" in conditions and any(c in conditions for c in bearish_conditions):
-                logger.warning(f"[{symbol}] Conflicting conditions: Three White Soldiers with bearish conditions, skipping SHORT")
-                return None
+            # Strict conflict resolution
+            if "Three Black Crows" in conditions:
+                logger.warning(f"[{symbol}] Three Black Crows detected, blocking LONG signal")
+                bullish_count = 0  # Block LONG signals
+            if "Three White Soldiers" in conditions:
+                logger.warning(f"[{symbol}] Three White Soldiers detected, blocking SHORT signal")
+                bearish_count = 0  # Block SHORT signals
+            if "Overbought RSI" in conditions and any(c in conditions for c in ["Bullish MACD", "Oversold Stochastic"]):
+                logger.warning(f"[{symbol}] Conflicting conditions: Overbought RSI with bullish indicators, skipping LONG")
+                bullish_count -= 2
+            if "Oversold RSI" in conditions and any(c in conditions for c in ["Bearish MACD", "Overbought Stochastic"]):
+                logger.warning(f"[{symbol}] Conflicting conditions: Oversold RSI with bearish indicators, skipping SHORT")
+                bearish_count -= 2
 
-            if bullish_count > bearish_count and confidence >= 80 and len(conditions) >= 6:  # Lowered from 8 to 6
+            if bullish_count > bearish_count + 1 and confidence >= 75 and len(conditions) >= 5:  # Lowered threshold to 5
                 direction = "LONG"
-            elif bearish_count > bullish_count and confidence >= 80 and len(conditions) >= 6:
+            elif bearish_count > bullish_count + 1 and confidence >= 75 and len(conditions) >= 5:
                 direction = "SHORT"
 
             if not direction:
-                logger.info(f"[{symbol}] No clear direction or insufficient conditions ({len(conditions)}) for {timeframe}")
+                logger.info(f"[{symbol}] No clear direction: Bullish={bullish_count}, Bearish={bearish_count}, Confidence={confidence:.2f}, Conditions={len(conditions)}")
                 return None
 
-            # Calculate TP/SL (improved ATR scaling)
+            # Calculate TP/SL
             atr = latest.get('atr', max(0.1 * current_price, 0.02))
             entry = round(current_price, 2)
             if direction == "LONG":
-                tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)  # Adjusted ATR multiplier
+                tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)
                 tp2 = round(entry + max(0.015 * entry, 1.5 * atr), 2)
                 tp3 = round(entry + max(0.02 * entry, 2.5 * atr), 2)
-                sl = round(entry - max(0.008 * entry, 1.0 * atr), 2)  # Adjusted SL
+                sl = round(entry - max(0.008 * entry, 1.0 * atr), 2)
             else:
                 tp1 = round(entry - max(0.01 * entry, 0.75 * atr), 2)
                 tp2 = round(entry - max(0.015 * entry, 1.5 * atr), 2)
