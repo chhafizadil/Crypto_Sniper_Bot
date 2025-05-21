@@ -32,9 +32,13 @@ class SignalPredictor:
             file_path = 'logs/signals_log_new.csv'
             if not os.path.exists(file_path):
                 logger.warning(f"[{symbol}] No historical signals for TP hit calculation")
-                return 60.0, 40.0, 20.0  # Adjusted defaults
+                return 60.0, 40.0, 20.0
 
             df = pd.read_csv(file_path)
+            if 'symbol' not in df.columns:
+                logger.error(f"[{symbol}] 'symbol' column missing in signals_log_new.csv")
+                return 60.0, 40.0, 20.0
+
             df = df[df['symbol'] == symbol]
             if df.empty:
                 logger.warning(f"[{symbol}] No historical signals for this symbol")
@@ -60,9 +64,9 @@ class SignalPredictor:
             tp1_distance = abs(tp1 - entry) / entry * 100
             tp2_distance = abs(tp2 - entry) / entry * 100
             tp3_distance = abs(tp3 - entry) / entry * 100
-            tp1_possibility *= min(1.0, 2.0 / tp1_distance)
-            tp2_possibility *= min(1.0, 3.0 / tp2_distance)
-            tp3_possibility *= min(1.0, 4.0 / tp3_distance)
+            tp1_possibility *= min(1.0, 2.0 / max(tp1_distance, 0.01))  # Avoid division by zero
+            tp2_possibility *= min(1.0, 3.0 / max(tp2_distance, 0.01))
+            tp3_possibility *= min(1.0, 4.0 / max(tp3_distance, 0.01))
 
             return max(min(tp1_possibility, 95.0), 50.0), max(min(tp2_possibility, 80.0), 30.0), max(min(tp3_possibility, 60.0), 10.0)
         except Exception as e:
@@ -202,7 +206,7 @@ class SignalPredictor:
             bullish_count = sum(1 for c in conditions if c in bullish_conditions)
             bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            if bullish_count > bearish_count and confidence >= 65 and len(conditions) >= 3:  # Relaxed thresholds
+            if bullish_count > bearish_count and confidence >= 65 and len(conditions) >= 3:
                 direction = "LONG"
             elif bearish_count > bullish_count and confidence >= 65 and len(conditions) >= 3:
                 direction = "SHORT"
@@ -212,7 +216,7 @@ class SignalPredictor:
                 return None
 
             # Calculate TP/SL
-            atr = latest.get('atr', max(0.005 * current_price, 0.02))  # Minimum ATR 0.5%
+            atr = max(latest.get('atr', 0.005 * current_price), 0.01 * current_price)  # Ensure ATR is at least 1% of price
             entry = round(current_price, 2)
             if direction == "LONG":
                 tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)
