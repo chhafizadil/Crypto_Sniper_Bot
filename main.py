@@ -31,8 +31,8 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000
-MIN_CONFIDENCE = 60  # Match old bot
+MIN_QUOTE_VOLUME = 1000000
+MIN_CONFIDENCE = 50  # Match old bot
 COOLDOWN_HOURS = 4
 
 cooldowns = {}
