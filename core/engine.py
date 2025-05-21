@@ -37,11 +37,7 @@ async def run_engine():
                 logger.error(f"[Engine] Missing environment variable: {var}")
                 return
 
-        model_path = "models/rf_model.joblib"
-        if not os.path.exists(model_path):
-            logger.error(f"[Engine] Model file not found at {model_path}")
-            return
-
+        # Skip model check since it's not used
         logs_dir = "logs"
         if not os.path.exists(logs_dir):
             logger.info(f"[Engine] Creating logs directory: {logs_dir}")
@@ -76,7 +72,7 @@ async def run_engine():
             logger.error(f"[Engine] Error loading markets: {str(e)}")
             return
 
-        for symbol in symbols[:15]:  # Increased to 15 for broader analysis
+        for symbol in symbols[:10]:  # Reduced from 15 to lower CPU usage
             memory_before = psutil.Process().memory_info().rss / 1024 / 1024
             cpu_percent = psutil.cpu_percent(interval=0.1)
             logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
@@ -96,7 +92,7 @@ async def run_engine():
             logger.info(f"[Engine] [{symbol}] Analyzing symbol")
             try:
                 signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
-                if signal and signal["confidence"] >= 70 and signal["tp1_possibility"] >= 70:  # Lowered to 70
+                if signal and signal["confidence"] >= 65 and signal["tp1_possibility"] >= 65:  # Lowered from 70
                     message = (
                         f"🚨 {signal['symbol']} Signal\n"
                         f"Timeframe: {signal['timeframe']}\n"
