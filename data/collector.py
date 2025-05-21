@@ -32,8 +32,11 @@ async def fetch_realtime_data(symbol, timeframe="15m", limit=50):
         # Fetch 24h quote volume
         ticker = await exchange.fetch_ticker(symbol)
         quote_volume_24h = ticker.get('quoteVolume', 0)
-        if quote_volume_24h <= 0:
-            logger.warning(f"[{symbol}] Invalid 24h quote volume: {quote_volume_24h}")
+        base_volume_24h = ticker.get('baseVolume', 0)
+        if quote_volume_24h <= 0 and base_volume_24h > 0:
+            quote_volume_24h = base_volume_24h * df['close'].iloc[-1]  # Approximate quote volume
+        if quote_volume_24h <= 100000:  # Lowered threshold from $500,000 to $100,000
+            logger.warning(f"[{symbol}] Low 24h quote volume: ${quote_volume_24h:,.2f} < $100,000")
             await exchange.close()
             return None
         df['quote_volume_24h'] = quote_volume_24h
@@ -64,6 +67,9 @@ async def websocket_collector(symbol, timeframe="15m", limit=50):
             # Fetch 24h quote volume
             ticker = await exchange.fetch_ticker(symbol)
             quote_volume_24h = ticker.get('quoteVolume', 0)
+            base_volume_24h = ticker.get('baseVolume', 0)
+            if quote_volume_24h <= 0 and base_volume_24h > 0:
+                quote_volume_24h = base_volume_24h * df['close'].iloc[-1]
             df['quote_volume_24h'] = quote_volume_24h
 
             cache_key = f"{symbol}_{timeframe}"
