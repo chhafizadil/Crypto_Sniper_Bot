@@ -5,10 +5,11 @@ import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot.sender import send_signal
+from telebot import send_signal  # Import from telebot.py
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
 from telegram import Bot
+from telebot import start_bot  # Import start_bot for webhook setup
 
 app = FastAPI()
 
@@ -21,6 +22,8 @@ async def telegram_webhook(request: Request):
     try:
         data = await request.json()
         logger.info(f"Telegram Update: {data}")
+        application = app.state.telegram_application
+        await application.process_update(data)
         return {"ok": True}
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
@@ -31,7 +34,7 @@ async def health_check():
     return {"status": "healthy"}
 
 MIN_QUOTE_VOLUME = 100000
-MIN_CONFIDENCE = 75  # Reduced from 80 for more signals
+MIN_CONFIDENCE = 70  # Lowered from 80
 COOLDOWN_HOURS = 4
 
 cooldowns = {}
@@ -81,7 +84,7 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 65:  # Reduced from 70 for more signals
+            if agreement >= 60:  # Lowered from 70
                 signal['timestamp'] = datetime.now().isoformat()
                 signal['status'] = 'pending'
                 signal['hit_timestamp'] = None
@@ -105,6 +108,7 @@ async def get_high_volume_symbols(exchange, min_volume):
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume = float(ticker.get('quoteVolume', 0) or 0)
                 close_price = float(ticker.get('close', 0) or 0)
+                logger.info(f"[{symbol}] Raw quoteVolume: {quote_volume}, closePrice: {close_price}")
                 if quote_volume >= min_volume and 0.00001 < close_price < 100000:
                     return symbol, quote_volume
                 else:
@@ -153,7 +157,7 @@ async def main_loop():
                 await asyncio.gather(*tasks, return_exceptions=True)
                 logger.info(f"Completed analysis batch {i//batch_size + 1}/{len(selected_symbols)//batch_size + 1}")
                 await asyncio.sleep(15)
-            logger.info("Completed analysis cycle. Waiting 180 seconds for next cycle...")
+            logger.info("Completed analysis cycle. Waiting 180 seconds...")
             await asyncio.sleep(180)
     except Exception as e:
         logger.error(f"Error in main loop: {str(e)}")
@@ -164,23 +168,12 @@ async def main_loop():
 async def startup_event():
     logger.info("Starting bot...")
     try:
-        bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-        await bot.delete_webhook(drop_pending_updates=True)
-        webhook_url = "https://married-elissa-individual-personal-5ae3052a.koyeb.app/webhook"
-        await bot.set_webhook(url=webhook_url)
-        logger.info("Webhook set successfully")
+        application = await start_bot()
+        app.state.telegram_application = application
+        logger.info("Telegram application stored in app state")
         asyncio.create_task(main_loop())
     except Exception as e:
-        logger.error(f"Error setting webhook: {str(e)}")
-
-async def test_analysis():
-    symbol = "ADA/USDT"
-    exchange = ccxt.binance({"enableRateLimit": True})
-    timeframes = ["15m"]
-    logger.info(f"Testing analysis for {symbol}")
-    signals = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
-    logger.info(f"Test analysis results for {symbol}: {signals}")
-    await exchange.close()
+        logger.error(f"Error during startup: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
