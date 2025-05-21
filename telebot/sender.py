@@ -19,7 +19,7 @@ async def help(update, context):
     help_text = (
         "📚 *Crypto Signal Bot Commands*\n"
         "/start - Start the bot\n"
-        "/summary - Get yesterday's signal summary\n"
+        "/summary - Get today's signal summary\n"
         "/report - Get detailed daily trading report\n"
         "/status - Check bot status\n"
         "/signal - Get the latest signal\n"
@@ -75,34 +75,34 @@ async def generate_daily_summary():
 
         df = pd.read_csv(file_path)
         today = datetime.now().strftime('%Y-%m-%d')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        today = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df_yesterday = df[df['timestamp'].dt.date == pd.to_datetime(yesterday).date()]
+        df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
 
-        if df_yesterday.empty:
-            logger.info("No signals found for yesterday")
+        if df_today.empty:
+            logger.info("No signals found for today")
             return None
 
-        total_signals = len(df_yesterday)
-        long_signals = len(df_yesterday[df_yesterday['direction'] == 'Long'])
-        short_signals = len(df_yesterday[df_yesterday['direction'] == 'Short'])
-        successful_signals = len(df_yesterday[df_yesterday['status'] == 'successful'])
-        failed_signals = len(df_yesterday[df_yesterday['status'] == 'failed'])
-        pending_signals = len(df_yesterday[df_yesterday['status'] == 'pending'])
+        total_signals = len(df_today)
+        long_signals = len(df_today[df_today['direction'] == 'Long'])
+        short_signals = len(df_today[df_today['direction'] == 'Short'])
+        successful_signals = len(df_today[df_today['status'] == 'successful'])
+        failed_signals = len(df_today[df_today['status'] == 'failed'])
+        pending_signals = len(df_today[df_today['status'] == 'pending'])
         successful_percentage = (successful_signals / total_signals * 100) if total_signals > 0 else 0
-        avg_confidence = df_yesterday['confidence'].mean() if total_signals > 0 else 0
-        top_symbol = df_yesterday['symbol'].mode()[0] if total_signals > 0 else "N/A"
-        most_active_timeframe = df_yesterday['timeframe'].mode()[0] if total_signals > 0 else "N/A"
-        total_volume = df_yesterday['volume'].sum() if total_signals > 0 else 0
-        tp1_hits = len(df_yesterday[df_yesterday.get('tp1_hit', False) == True]) if 'tp1_hit' in df_yesterday else 0
-        tp2_hits = len(df_yesterday[df_yesterday.get('tp2_hit', False) == True]) if 'tp2_hit' in df_yesterday else 0
-        tp3_hits = len(df_yesterday[df_yesterday.get('tp3_hit', False) == True]) if 'tp3_hit' in df_yesterday else 0
-        sl_hits = len(df_yesterday[df_yesterday.get('sl_hit', False) == True]) if 'sl_hit' in df_yesterday else 0
+        avg_confidence = df_today['confidence'].mean() if total_signals > 0 else 0
+        top_symbol = df_today['symbol'].mode()[0] if total_signals > 0 else "N/A"
+        most_active_timeframe = df_today['timeframe'].mode()[0] if total_signals > 0 else "N/A"
+        total_volume = df_today['volume'].sum() if total_signals > 0 else 0
+        tp1_hits = len(df_today[df_today.get('tp1_hit', False) == True]) if 'tp1_hit' in df_today else 0
+        tp2_hits = len(df_today[df_today.get('tp2_hit', False) == True]) if 'tp2_hit' in df_today else 0
+        tp3_hits = len(df_today[df_today.get('tp3_hit', False) == True]) if 'tp3_hit' in df_today else 0
+        sl_hits = len(df_today[df_today.get('sl_hit', False) == True]) if 'sl_hit' in df_today else 0
 
         report = (
             f"📊 *Daily Trading Summary ({today})*\n"
             f"📈 Total Signals: {total_signals}\n"
-            f"📅 Yesterday's Signals: {len(df_yesterday)}\n"
+            f"📅 today's Signals: {len(df_today)}\n"
             f"🚀 Long Signals: {long_signals}\n"
             f"📉 Short Signals: {short_signals}\n"
             f"🎯 Successful Signals: {successful_signals} ({successful_percentage:.2f}%)\n"
@@ -129,14 +129,14 @@ async def summary(update, context):
     if report:
         await update.message.reply_text(report, parse_mode='Markdown')
     else:
-        await update.message.reply_text("No signals available for yesterday.")
+        await update.message.reply_text("No signals available for today.")
 
 async def report(update, context):
     report = await generate_daily_summary()
     if report:
         await update.message.reply_text(report, parse_mode='Markdown')
     else:
-        await update.message.reply_text("No detailed report available for yesterday.")
+        await update.message.reply_text("No detailed report available for today.")
 
 async def send_signal(signal):
     try:
