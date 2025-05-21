@@ -2,11 +2,12 @@ from utils.logger import logger
 
 def classify_trade(confidence):
     try:
-        if 80 <= confidence <= 100:
-            return "Normal"
+        if confidence >= 85:
+            trade_type = "Normal"
         else:
-            return "Scalping"  # Default to Scalping
-        logger.info(f"Trade classified with confidence {confidence:.2f}")
+            trade_type = "Scalping"
+        logger.info(f"Trade classified as {trade_type} with confidence {confidence:.2f}")
+        return trade_type
     except Exception as e:
         logger.error(f"Error classifying trade: {str(e)}")
         return "Scalping"
