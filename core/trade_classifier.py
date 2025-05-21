@@ -1,8 +1,12 @@
-# Updated core/trade_classifier.py to remove Trade Type: None and set default to Scalping
+from utils.logger import logger
+
 def classify_trade(confidence):
-    if confidence >= 75:
-        return "Swing"
-    elif 60 <= confidence < 75:
-        return "Normal"
-    else:
-        return "Scalping"  # Default to Scalping
+    try:
+        if 80 <= confidence <= 100:
+            return "Normal"
+        else:
+            return "Scalping"  # Default to Scalping
+        logger.info(f"Trade classified with confidence {confidence:.2f}")
+    except Exception as e:
+        logger.error(f"Error classifying trade: {str(e)}")
+        return "Scalping"
