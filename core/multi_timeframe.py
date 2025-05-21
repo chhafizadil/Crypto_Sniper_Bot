@@ -4,7 +4,7 @@ from utils.logger import logger
 import asyncio
 import ta
 
-async def fetch_ohlcv(exchange, symbol, timeframe, limit=100):
+async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):  # Reduced limit
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         if not ohlcv or len(ohlcv) < 50:
@@ -17,7 +17,7 @@ async def fetch_ohlcv(exchange, symbol, timeframe, limit=100):
         logger.error(f"[{symbol}] Failed to fetch OHLCV for {timeframe}: {e}")
         return None
 
-async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', '1h', '4h', '1d']):
+async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['1h', '4h', '1d']):
     try:
         signals = []
         for timeframe in timeframes:
@@ -42,7 +42,7 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', 
                 timeframe_direction = "SHORT"
 
             # Volume filter
-            if latest["volume"] < 1.2 * latest["volume_sma_20"]:  # Softened threshold
+            if latest["volume"] < 1.2 * latest["volume_sma_20"]:
                 logger.warning(f"[{symbol}] Low volume on {timeframe}")
                 continue
 
@@ -60,13 +60,12 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', 
 
         # Check for 2/4 timeframe agreement
         agreement_count = len(signals)
-        if agreement_count >= 2:
+        if agreement_count >= 2:  # Keep 2/4 agreement
             logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)} for {direction}")
             return signals, agreement_count / len(timeframes) * 100
         else:
             logger.warning(f"[{symbol}] Insufficient timeframe agreement: {agreement_count}/{len(timeframes)}")
             return [], 0
-
     except Exception as e:
-        logger.error(f"[{symbol}] Error in multi_timeframe_boost: {e}")
+        logger.error(f"[{symbol}] Error in multi_timeframe_boost: {str(e)}")
         return [], 0
