@@ -94,7 +94,7 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        file_path = 'logs/signals.csv'
+        file_path = 'logs/signals_log_new.csv'
         if not os.path.exists(file_path):
             await update.message.reply_text("No signals available.")
             return
@@ -140,7 +140,7 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        file_path = 'logs/signals.csv'
+        file_path = 'logs/signals_log_new.csv'
         if not os.path.exists(file_path):
             logger.warning("Signals log file not found")
             return None
