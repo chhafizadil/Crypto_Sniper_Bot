@@ -40,7 +40,7 @@ cooldowns = {}
 def save_signal_to_csv(signal):
     try:
         os.makedirs('logs', exist_ok=True)
-        file_path = 'logs/signals_log_new.csv'
+        file_path = 'logs/signals.csv'
         required_columns = [
             'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
@@ -81,14 +81,14 @@ def create_manual_csv():
             "hit_timestamp": None
         }
         os.makedirs('logs', exist_ok=True)
-        file_path = 'logs/signals_log_new.csv'
+        file_path = 'logs/signals.csv'
         df = pd.DataFrame([signal])
         df.to_csv(file_path, index=False)
         logger.info(f"Manual CSV created at {file_path}")
     except Exception as e:
         logger.error(f"Error creating manual CSV: {str(e)}")
 
-async def send_signals_from_csv(csv_path='logs/signals_log_new.csv'):
+async def send_signals_from_csv(csv_path='logs/signals.csv'):
     try:
         if not os.path.exists(csv_path):
             logger.error(f"CSV file {csv_path} does not exist")
