@@ -1,7 +1,6 @@
 import telegram
 import asyncio
 import pandas as pd
-import aiosqlite
 from telegram.ext import Application, CommandHandler
 from telegram.error import Conflict, RetryAfter
 from utils.logger import logger
@@ -13,7 +12,10 @@ import time
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
-WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"  # Hard-coded
+WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
+
+# میموری میں سگنلز کی لسٹ
+signals_list = []
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -25,30 +27,9 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-async def get_historical_probabilities(symbol):
-    try:
-        async with aiosqlite.connect('logs/signals.db') as db:
-            cursor = await db.execute("SELECT * FROM signals WHERE symbol = ? AND status != 'pending'", (symbol,))
-            rows = await cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-        df = pd.DataFrame(rows, columns=columns)
-        if df.empty:
-            return {"TP1": 60, "TP2": 40, "TP3": 20}
-        total = len(df)
-        tp1_hits = len(df[df['status'].isin(['tp1', 'tp2', 'tp3'])])
-        tp2_hits = len(df[df['status'].isin(['tp2', 'tp3'])])
-        tp3_hits = len(df[df['status'] == 'tp3'])
-        return {
-            "TP1": (tp1_hits / total * 100) if total > 0 else 60,
-            "TP2": (tp2_hits / total * 100) if total > 0 else 40,
-            "TP3": (tp3_hits / total * 100) if total > 0 else 20
-        }
-    except Exception as e:
-        logger.error(f"Error fetching historical probabilities for {symbol}: {str(e)}")
-        return {"TP1": 60, "TP2": 40, "TP3": 20}
-
 def calculate_tp_probabilities(indicators, symbol):
-    base_prob = asyncio.run(get_historical_probabilities(symbol))
+    # ڈیٹابیس کے بغیر ڈیفالٹ ویلیوز
+    base_prob = {"TP1": 60, "TP2": 40, "TP3": 20}
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
@@ -129,20 +110,14 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        async with aiosqlite.connect('logs/signals.db') as db:
-            cursor = await db.execute("SELECT * FROM signals ORDER BY timestamp DESC LIMIT 1")
-            row = await cursor.fetchone()
-            columns = [desc[0] for desc in cursor.description]
-        if not row:
+        if not signals_list:
             await update.message.reply_text("No signals available.")
             return
-        latest_signal = dict(zip(columns, row))
+        latest_signal = signals_list[-1]
         conditions_str = latest_signal['conditions']
-        
         latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
         latest_signal['quote_volume_24h'] = get_24h_volume(latest_signal['symbol'])
         latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
-        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {latest_signal['symbol']}\n"
@@ -169,11 +144,10 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        async with aiosqlite.connect('logs/signals.db') as db:
-            cursor = await db.execute("SELECT * FROM signals")
-            rows = await cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-        df = pd.DataFrame(rows, columns=columns)
+        if not signals_list:
+            logger.info("No signals found for today")
+            return None
+        df = pd.DataFrame(signals_list)
         today = datetime.now().strftime('%Y-%m-%d')
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
@@ -237,7 +211,6 @@ async def send_signal(signal):
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         conditions_str = ", ".join(signal.get('conditions', [])) or "None"
-        
         signal = adjust_take_profits(signal)
         probabilities = calculate_tp_probabilities(signal.get('conditions', []), signal['symbol'])
         signal['tp1_possibility'] = probabilities['TP1']
@@ -246,7 +219,6 @@ async def send_signal(signal):
         signal['leverage'] = determine_leverage(signal.get('conditions', []))
         signal['quote_volume_24h'] = get_24h_volume(signal['symbol'])
         signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {signal['symbol']}\n"
