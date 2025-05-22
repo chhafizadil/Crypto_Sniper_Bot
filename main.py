@@ -5,16 +5,11 @@ import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot.sender import send_signal, start_bot, signals_list
+from telebot.sender import send_signal, start_bot
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
-import schedule
-import time
 
 app = FastAPI()
-
-# میموری میں سگنلز کی لسٹ (رپورٹ کے لیے)
-signals_list = []
 
 @app.get("/")
 async def root():
@@ -36,11 +31,43 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 500000
+MIN_QUOTE_VOLUME = 1000000  # Volume filter disabled (change if needed)
 MIN_CONFIDENCE = 65
-COOLDOWN_HOURS = 6
+COOLDOWN_HOURS = 6  # Cooldown disabled (set > 0 to enable cooldown)
 
 cooldowns = {}
+
+def save_signal_to_csv(signal):
+    try:
+        os.makedirs('logs', exist_ok=True)
+        file_path = 'logs/signals.csv'
+        required_columns = [
+            'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
+            'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
+            'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
+            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement'
+        ]
+        signal_dict = {col: signal.get(col, None) for col in required_columns}
+        signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
+        df = pd.DataFrame([signal_dict])
+        df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
+        logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
+    except Exception as e:
+        logger.error(f"Error saving signal to CSV for {signal.get('symbol','unknown')}: {str(e)}")
+
+async def send_signals_from_csv(csv_path='logs/signals.csv'):
+    try:
+        if not os.path.exists(csv_path):
+            logger.warning(f"CSV file {csv_path} does not exist. No signals to send.")
+            return
+        df = pd.read_csv(csv_path)
+        for _, signal in df.iterrows():
+            signal_dict = signal.to_dict()
+            logger.info(f"Sending signal from CSV: {signal_dict.get('symbol', 'N/A')} - {signal_dict.get('direction', 'N/A')}")
+            await send_signal(signal_dict)
+            logger.info(f"[{signal_dict.get('symbol', 'N/A')}] Signal sent from CSV to Telegram")
+    except Exception as e:
+        logger.error(f"Failed to read CSV or send signals: {str(e)}")
 
 def is_symbol_on_cooldown(symbol):
     try:
@@ -70,19 +97,15 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 50:  # 2/4 agreement = 75%
-                logger.warning(f"[{symbol}] Insufficient timeframe agreement: {agreement:.2f}%")
-                return
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
-            # سگنل میموری میں شامل کریں
-            signals_list.append(signal)
-            # براہ راست ٹیلی گرام پر بھیجیں
+            logger.info(f"[{symbol}] Sending signal to Telegram")
             await send_signal(signal)
+            save_signal_to_csv(signal)
             update_cooldown(symbol)
-            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement:.2f}%)")
+            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
         else:
             logger.info(f"[{symbol}] No signal or confidence below threshold ({signal.get('confidence',0) if signal else 'N/A'}%)")
     except Exception as e:
@@ -129,7 +152,7 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['15m', '1h', '4h', '1d']
+        timeframes = ['1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
@@ -152,24 +175,6 @@ async def main_loop():
     finally:
         await exchange.close()
 
-def schedule_hourly_report():
-    schedule.every(1).hours.do(asyncio.run, generate_daily_summary_and_send)
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-async def generate_daily_summary_and_send():
-    from telebot.sender import generate_daily_summary
-    report = await generate_daily_summary()
-    if report:
-        bot = telegram.Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-        await bot.send_message(chat_id=os.getenv('TELEGRAM_CHAT_ID'), text=report, parse_mode='Markdown')
-        logger.info("Hourly report sent to Telegram")
-    else:
-        bot = telegram.Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-        await bot.send_message(chat_id=os.getenv('TELEGRAM_CHAT_ID'), text="No signals available for today.", parse_mode='Markdown')
-        logger.info("No signals for hourly report")
-
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting bot...")
@@ -177,8 +182,7 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        # ہر گھنٹے رپورٹ کا شیڈول شروع کریں
-        asyncio.create_task(asyncio.to_thread(schedule_hourly_report))
+        await send_signals_from_csv()  # Send any existing signals on startup
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
