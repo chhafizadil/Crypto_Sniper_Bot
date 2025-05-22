@@ -129,7 +129,7 @@ async def get_high_volume_symbols(exchange, min_volume):
             except Exception as e:
                 logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
                 return None
-        batch_size = 25
+        batch_size = 10
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i:i + batch_size]
             tasks = [fetch_ticker(symbol) for symbol in batch]
@@ -152,16 +152,16 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['1h', '4h', '1d']
+        timeframes = ['15m','1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
             if not high_volume_symbols:
-                logger.warning("No symbols passed volume filter. Retrying in 180 seconds...")
+                logger.warning("No symbols passed volume filter. Retrying in 3600 seconds...")
                 await asyncio.sleep(180)
                 continue
             batch_size = 1
-            selected_symbols = high_volume_symbols[:20]
+            selected_symbols = high_volume_symbols[:10]
             for i in range(0, len(selected_symbols), batch_size):
                 batch = selected_symbols[i:i + batch_size]
                 tasks = [process_symbol(symbol, exchange, timeframes) for symbol in batch]
