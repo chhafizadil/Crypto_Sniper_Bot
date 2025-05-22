@@ -6,10 +6,73 @@ from telegram.error import Conflict
 from utils.logger import logger
 from datetime import datetime, timedelta
 import os
+import pytz
+import requests
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"  # Hard-coded
+
+def format_timestamp_to_pk(utc_timestamp_str):
+    try:
+        utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00'))
+        utc_time = utc_time.replace(tzinfo=pytz.UTC)
+        pk_time = utc_time.astimezone(pytz.timezone("Asia/Karachi"))
+        return pk_time.strftime("%d %B %Y, %I:%M %p")
+    except Exception as e:
+        logger.error(f"Error converting timestamp: {str(e)}")
+        return utc_timestamp_str
+
+def calculate_tp_probabilities(indicators):
+    score = 0
+    if isinstance(indicators, str):
+        indicators = indicators.split(", ")
+    if "Bullish MACD" in indicators: score += 2
+    if "Strong Trend" in indicators: score += 2
+    if "Overbought Stochastic" in indicators: score += 1
+    if "Above VWAP" in indicators: score += 1
+    if "Hammer" in indicators: score += 1
+    if "Near Support" in indicators: score += 2
+    if "Near Resistance" in indicators: score -= 1
+
+    if score >= 7:
+        return {"TP1": 90, "TP2": 70, "TP3": 50}
+    elif score >= 5:
+        return {"TP1": 76, "TP2": 54, "TP3": 38}
+    else:
+        return {"TP1": 60, "TP2": 40, "TP3": 20}
+
+def determine_leverage(indicators):
+    score = 0
+    if isinstance(indicators, str):
+        indicators = indicators.split(", ")
+    if "Bullish MACD" in indicators: score += 2
+    if "Strong Trend" in indicators: score += 2
+    if "Above VWAP" in indicators: score += 1
+    if "Near Support" in indicators: score += 1
+    if "Near Resistance" in indicators: score -= 1
+    if "Overbought Stochastic" in indicators: score -= 1
+
+    if score >= 5:
+        return "40x"
+    elif score >= 3:
+        return "30x"
+    elif score >= 1:
+        return "20x"
+    else:
+        return "10x"
+
+def get_24h_volume(symbol):
+    try:
+        symbol_clean = symbol.replace("/", "").upper()  # Convert ETH/USDT to ETHUSDT
+        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
+        response = requests.get(url)
+        data = response.json()
+        quote_volume = float(data["quoteVolume"])
+        return f"${quote_volume:,.2f}"
+    except Exception as e:
+        logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
+        return "$0.00"
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -39,8 +102,18 @@ async def signal(update, context):
         if df.empty:
             await update.message.reply_text("No signals available.")
             return
-        latest_signal = df.iloc[-1]
-        conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) else latest_signal['conditions'])
+        latest_signal = df.iloc[-1].to_dict()
+        conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
+        
+        # Update dynamic fields
+        probabilities = calculate_tp_probabilities(latest_signal['conditions'])
+        latest_signal['tp1_possibility'] = probabilities['TP1']
+        latest_signal['tp2_possibility'] = probabilities['TP2']
+        latest_signal['tp3_possibility'] = probabilities['TP3']
+        latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
+        latest_signal['quote_volume_24h'] = get_24h_volume(latest_signal['symbol'])
+        latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
+        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {latest_signal['symbol']}\n"
@@ -54,9 +127,9 @@ async def signal(update, context):
             f"🛑 SL: ${latest_signal['sl']:.2f}\n"
             f"🔍 Confidence: {latest_signal['confidence']:.2f}%\n"
             f"⚡ Type: {latest_signal['trade_type']}\n"
-            f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}x\n"
+            f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}\n"
             f"📈 Combined Candle Volume: ${latest_signal['volume']:,.2f}\n"
-            f"📈 24h Volume: ${latest_signal.get('quote_volume_24h', 0):,.2f}\n"
+            f"📈 24h Volume: {latest_signal['quote_volume_24h']}\n"
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {latest_signal['timestamp']}"
         )
@@ -135,6 +208,16 @@ async def send_signal(signal):
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         conditions_str = ", ".join(signal.get('conditions', [])) or "None"
+        
+        # Update dynamic fields
+        probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+        signal['tp1_possibility'] = probabilities['TP1']
+        signal['tp2_possibility'] = probabilities['TP2']
+        signal['tp3_possibility'] = probabilities['TP3']
+        signal['leverage'] = determine_leverage(signal.get('conditions', []))
+        signal['quote_volume_24h'] = get_24h_volume(signal['symbol'])
+        signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
+        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {signal['symbol']}\n"
@@ -148,9 +231,9 @@ async def send_signal(signal):
             f"🛑 SL: ${signal['sl']:.2f}\n"
             f"🔍 Confidence: {signal['confidence']:.2f}%\n"
             f"⚡ Type: {signal['trade_type']}\n"
-            f"⚖ Leverage: {signal.get('leverage', 'N/A')}x\n"
+            f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
             f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
-            f"📈 24h Volume: ${signal.get('quote_volume_24h', 0):,.2f}\n"
+            f"📈 24h Volume: {signal['quote_volume_24h']}\n"
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {signal['timestamp']}"
         )
