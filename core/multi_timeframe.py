@@ -7,7 +7,7 @@ import ta
 async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):  # Reduced limit
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 20:
+        if not ohlcv or len(ohlcv) < 50:
             logger.error(f"[{symbol}] Insufficient OHLCV data for {timeframe}")
             return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'], dtype='float32')
@@ -17,7 +17,7 @@ async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):  # Reduced limit
         logger.error(f"[{symbol}] Failed to fetch OHLCV for {timeframe}: {e}")
         return None
 
-async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['1h', '4h',]):
+async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','1h', '4h', '1d']):
     try:
         signals = []
         for timeframe in timeframes:
