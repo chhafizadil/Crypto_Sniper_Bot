@@ -31,7 +31,7 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000  # Volume filter disabled
+MIN_QUOTE_VOLUME = 0  # Volume filter disabled
 MIN_CONFIDENCE = 50
 COOLDOWN_HOURS = 0  # Cooldown disabled
 
@@ -52,8 +52,10 @@ def save_signal_to_csv(signal):
         df = pd.DataFrame([signal_dict])
         df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
         logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
+        return True
     except Exception as e:
         logger.error(f"Error saving signal to CSV for {signal['symbol']}: {str(e)}")
+        return False
 
 def create_manual_csv():
     try:
@@ -85,22 +87,26 @@ def create_manual_csv():
         df = pd.DataFrame([signal])
         df.to_csv(file_path, index=False)
         logger.info(f"Manual CSV created at {file_path}")
+        return signal  # Return signal for direct sending if needed
     except Exception as e:
         logger.error(f"Error creating manual CSV: {str(e)}")
+        return None
 
 async def send_signals_from_csv(csv_path='logs/signals.csv'):
     try:
         if not os.path.exists(csv_path):
             logger.error(f"CSV file {csv_path} does not exist")
-            return
+            return False
         df = pd.read_csv(csv_path)
         for _, signal in df.iterrows():
             signal_dict = signal.to_dict()
             logger.info(f"Reading signal from CSV: {signal_dict['symbol']} - {signal_dict['direction']}")
             await send_signal(signal_dict)
             logger.info(f"[{signal_dict['symbol']}] Signal sent from CSV to Telegram")
+        return True
     except Exception as e:
         logger.error(f"Failed to read CSV or send signals: {str(e)}")
+        return False
 
 def is_symbol_on_cooldown(symbol):
     try:
@@ -134,8 +140,12 @@ async def process_symbol(symbol, exchange, timeframes):
             signal['hit_timestamp'] = None
             signal['agreement'] = 66.67  # Force 2/3 agreement
             logger.info(f"[{symbol}] Attempting to send signal to Telegram")
-            await send_signal(signal)  # Send signal directly
-            save_signal_to_csv(signal)
+            # Try saving to CSV, send directly if it fails
+            if not save_signal_to_csv(signal):
+                logger.warning(f"[{symbol}] CSV save failed, sending signal directly to Telegram")
+                await send_signal(signal)
+            else:
+                await send_signal(signal)  # Send signal anyway
             update_cooldown(symbol)
             logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
     except Exception as e:
@@ -215,8 +225,13 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        create_manual_csv()  # Create manual CSV on startup
-        await send_signals_from_csv()  # Send signals from CSV
+        manual_signal = create_manual_csv()  # Create manual CSV
+        # If CSV creation fails, send manual signal directly
+        if not manual_signal or not await send_signals_from_csv():
+            logger.warning("CSV creation or reading failed, sending manual signal directly")
+            if manual_signal:
+                await send_signal(manual_signal)
+                logger.info(f"[IOTA/USDT] Manual signal sent directly to Telegram")
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
