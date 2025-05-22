@@ -1,7 +1,7 @@
 import telegram
 import asyncio
 import pandas as pd
-import sqlite3
+import aiosqlite
 from telegram.ext import Application, CommandHandler
 from telegram.error import Conflict, RetryAfter
 from utils.logger import logger
@@ -25,16 +25,18 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-def get_historical_probabilities(symbol):
+async def get_historical_probabilities(symbol):
     try:
-        conn = sqlite3.connect('logs/signals.db')
-        df = pd.read_sql_query("SELECT * FROM signals WHERE symbol = ? AND status != 'pending'", conn, params=(symbol,))
-        conn.close()
+        async with aiosqlite.connect('logs/signals.db') as db:
+            cursor = await db.execute("SELECT * FROM signals WHERE symbol = ? AND status != 'pending'", (symbol,))
+            rows = await cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+        df = pd.DataFrame(rows, columns=columns)
         if df.empty:
             return {"TP1": 60, "TP2": 40, "TP3": 20}
         total = len(df)
-        tp1_hits = len(df[df['status'] == 'tp1']) + len(df[df['status'] == 'tp2']) + len(df[df['status'] == 'tp3'])
-        tp2_hits = len(df[df['status'] == 'tp2']) + len(df[df['status'] == 'tp3'])
+        tp1_hits = len(df[df['status'].isin(['tp1', 'tp2', 'tp3'])])
+        tp2_hits = len(df[df['status'].isin(['tp2', 'tp3'])])
         tp3_hits = len(df[df['status'] == 'tp3'])
         return {
             "TP1": (tp1_hits / total * 100) if total > 0 else 60,
@@ -46,7 +48,7 @@ def get_historical_probabilities(symbol):
         return {"TP1": 60, "TP2": 40, "TP3": 20}
 
 def calculate_tp_probabilities(indicators, symbol):
-    base_prob = get_historical_probabilities(symbol)
+    base_prob = asyncio.run(get_historical_probabilities(symbol))
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
@@ -57,7 +59,7 @@ def calculate_tp_probabilities(indicators, symbol):
     if "Hammer" in indicators: score += 1
     if "Near Support" in indicators: score += 2
     if "Near Resistance" in indicators: score -= 1
-    boost = min(score * 5, 20)  # Max 20% boost
+    boost = min(score * 5, 20)
     return {
         "TP1": min(base_prob["TP1"] + boost, 95),
         "TP2": min(base_prob["TP2"] + boost, 75),
@@ -68,9 +70,9 @@ def adjust_take_profits(signal):
     entry = signal['entry']
     is_stablecoin = 'USDT' in signal['symbol'] and signal['symbol'] != 'USDT/BUSD'
     if is_stablecoin:
-        tp_range = (0.01, 0.02)  # 1-2% for stablecoins
+        tp_range = (0.01, 0.02)
     else:
-        tp_range = (0.05, 0.10)  # 5-10% for volatile pairs
+        tp_range = (0.05, 0.10)
     signal['tp1'] = min(signal['tp1'], entry * (1 + tp_range[0]))
     signal['tp2'] = min(signal['tp2'], entry * (1 + tp_range[0] * 1.5))
     signal['tp3'] = min(signal['tp3'], entry * (1 + tp_range[1]))
@@ -127,13 +129,14 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        conn = sqlite3.connect('logs/signals.db')
-        df = pd.read_sql_query("SELECT * FROM signals ORDER BY timestamp DESC LIMIT 1", conn)
-        conn.close()
-        if df.empty:
+        async with aiosqlite.connect('logs/signals.db') as db:
+            cursor = await db.execute("SELECT * FROM signals ORDER BY timestamp DESC LIMIT 1")
+            row = await cursor.fetchone()
+            columns = [desc[0] for desc in cursor.description]
+        if not row:
             await update.message.reply_text("No signals available.")
             return
-        latest_signal = df.iloc[-1].to_dict()
+        latest_signal = dict(zip(columns, row))
         conditions_str = latest_signal['conditions']
         
         latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
@@ -166,9 +169,11 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        conn = sqlite3.connect('logs/signals.db')
-        df = pd.read_sql_query("SELECT * FROM signals", conn)
-        conn.close()
+        async with aiosqlite.connect('logs/signals.db') as db:
+            cursor = await db.execute("SELECT * FROM signals")
+            rows = await cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+        df = pd.DataFrame(rows, columns=columns)
         today = datetime.now().strftime('%Y-%m-%d')
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
@@ -178,7 +183,7 @@ async def generate_daily_summary():
         total_signals = len(df_today)
         long_signals = len(df_today[df_today['direction'] == 'LONG'])
         short_signals = len(df_today[df_today['direction'] == 'SHORT'])
-        successful_signals = len(df_today[df_today['status'] == 'tp1']) + len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
+        successful_signals = len(df_today[df_today['status'].isin(['tp1', 'tp2', 'tp3'])])
         failed_signals = len(df_today[df_today['status'] == 'sl'])
         pending_signals = len(df_today[df_today['status'] == 'pending'])
         successful_percentage = (successful_signals / total_signals * 100) if total_signals > 0 else 0
@@ -186,8 +191,8 @@ async def generate_daily_summary():
         top_symbol = df_today['symbol'].mode()[0] if total_signals > 0 else "N/A"
         most_active_timeframe = df_today['timeframe'].mode()[0] if total_signals > 0 else "N/A"
         total_volume = df_today['volume'].sum() if total_signals > 0 else 0
-        tp1_hits = len(df_today[df_today['status'] == 'tp1']) + len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
-        tp2_hits = len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
+        tp1_hits = len(df_today[df_today['status'].isin(['tp1', 'tp2', 'tp3'])])
+        tp2_hits = len(df_today[df_today['status'].isin(['tp2', 'tp3'])])
         tp3_hits = len(df_today[df_today['status'] == 'tp3'])
         sl_hits = len(df_today[df_today['status'] == 'sl'])
         report = (
