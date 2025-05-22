@@ -31,9 +31,9 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 0  # Volume filter disabled
+MIN_QUOTE_VOLUME = 0  # Volume filter disabled (change if needed)
 MIN_CONFIDENCE = 50
-COOLDOWN_HOURS = 0  # Cooldown disabled
+COOLDOWN_HOURS = 0  # Cooldown disabled (set > 0 to enable cooldown)
 
 cooldowns = {}
 
@@ -45,7 +45,7 @@ def save_signal_to_csv(signal):
             'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
             'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
-            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage'
+            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement'
         ]
         signal_dict = {col: signal.get(col, None) for col in required_columns}
         signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
@@ -53,52 +53,19 @@ def save_signal_to_csv(signal):
         df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
         logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
     except Exception as e:
-        logger.error(f"Error saving signal to CSV for {signal['symbol']}: {str(e)}")
-
-def create_manual_csv():
-    try:
-        signal = {
-            "symbol": "IOTA/USDT",
-            "direction": "BUY",
-            "timeframe": "1h",
-            "trade_duration": "short",
-            "entry": 0.15,
-            "tp1": 0.18,
-            "tp1_possibility": 80.0,
-            "tp2": 0.20,
-            "tp2_possibility": 60.0,
-            "tp3": 0.22,
-            "tp3_possibility": 40.0,
-            "sl": 0.13,
-            "confidence": 75.0,
-            "trade_type": "spot",
-            "leverage": "N/A",
-            "volume": 4600000.0,
-            "quote_volume_24h": 5000000.0,
-            "conditions": "RSI>70,MACD",
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending",
-            "hit_timestamp": None
-        }
-        os.makedirs('logs', exist_ok=True)
-        file_path = 'logs/signals.csv'
-        df = pd.DataFrame([signal])
-        df.to_csv(file_path, index=False)
-        logger.info(f"Manual CSV created at {file_path}")
-    except Exception as e:
-        logger.error(f"Error creating manual CSV: {str(e)}")
+        logger.error(f"Error saving signal to CSV for {signal.get('symbol','unknown')}: {str(e)}")
 
 async def send_signals_from_csv(csv_path='logs/signals.csv'):
     try:
         if not os.path.exists(csv_path):
-            logger.error(f"CSV file {csv_path} does not exist")
+            logger.warning(f"CSV file {csv_path} does not exist. No signals to send.")
             return
         df = pd.read_csv(csv_path)
         for _, signal in df.iterrows():
             signal_dict = signal.to_dict()
-            logger.info(f"Reading signal from CSV: {signal_dict['symbol']} - {signal_dict['direction']}")
+            logger.info(f"Sending signal from CSV: {signal_dict.get('symbol', 'N/A')} - {signal_dict.get('direction', 'N/A')}")
             await send_signal(signal_dict)
-            logger.info(f"[{signal_dict['symbol']}] Signal sent from CSV to Telegram")
+            logger.info(f"[{signal_dict.get('symbol', 'N/A')}] Signal sent from CSV to Telegram")
     except Exception as e:
         logger.error(f"Failed to read CSV or send signals: {str(e)}")
 
@@ -124,6 +91,7 @@ def update_cooldown(symbol):
 async def process_symbol(symbol, exchange, timeframes):
     try:
         if is_symbol_on_cooldown(symbol):
+            logger.info(f"[{symbol}] Skipping due to cooldown")
             return
         logger.info(f"[{symbol}] Starting multi-timeframe analysis")
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
@@ -132,12 +100,14 @@ async def process_symbol(symbol, exchange, timeframes):
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
-            signal['agreement'] = 50  # Force 2/3 agreement
-            logger.info(f"[{symbol}] Attempting to send signal to Telegram")
-            await send_signal(signal)  # Send signal directly
+            signal['agreement'] = agreement
+            logger.info(f"[{symbol}] Sending signal to Telegram")
+            await send_signal(signal)
             save_signal_to_csv(signal)
             update_cooldown(symbol)
             logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
+        else:
+            logger.info(f"[{symbol}] No signal or confidence below threshold ({signal.get('confidence',0) if signal else 'N/A'}%)")
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {str(e)}")
 
@@ -152,11 +122,9 @@ async def get_high_volume_symbols(exchange, min_volume):
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume = float(ticker.get('quoteVolume', 0) or 0)
                 close_price = float(ticker.get('close', 0) or 0)
-                logger.info(f"[{symbol}] Raw quoteVolume: {quote_volume}, closePrice: {close_price}")
                 if quote_volume >= min_volume and 0.00001 < close_price < 100000:
                     return symbol, quote_volume
                 else:
-                    logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume:,.2f} < ${min_volume:,.0f}) or invalid price ({close_price})")
                     return None
             except Exception as e:
                 logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
@@ -170,7 +138,6 @@ async def get_high_volume_symbols(exchange, min_volume):
                 if isinstance(result, tuple):
                     symbol, quote_volume = result
                     high_volume_symbols.append(symbol)
-                    logger.info(f"[{symbol}] Passed volume filter: ${quote_volume:,.2f} >= ${min_volume:,.0f}")
             await asyncio.sleep(3)
         return high_volume_symbols
     except Exception as e:
@@ -215,8 +182,7 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        create_manual_csv()  # Create manual CSV on startup
-        await send_signals_from_csv()  # Send signals from CSV
+        await send_signals_from_csv()  # Send any existing signals on startup
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
