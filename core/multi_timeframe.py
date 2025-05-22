@@ -7,7 +7,7 @@ import ta
 async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):  # Reduced limit
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        if not ohlcv or len(ohlcv) < 50:
+        if not ohlcv or len(ohlcv) < 20:
             logger.error(f"[{symbol}] Insufficient OHLCV data for {timeframe}")
             return None
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'], dtype='float32')
