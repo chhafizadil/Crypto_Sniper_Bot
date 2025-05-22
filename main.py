@@ -136,14 +136,14 @@ async def main_loop():
             'secret': os.getenv('BINANCE_API_SECRET'),
             'enableRateLimit': True
         })
-        timeframes = ['1h', '4h', '1d']
+        timeframes = ['1h', '4h',]
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             if not high_volume_symbols:
                 await asyncio.sleep(180)
                 continue
-            batch_size = 3
-            selected_symbols = high_volume_symbols[:20]
+            batch_size = 1
+            selected_symbols = high_volume_symbols[:10]
             for i in range(0, len(selected_symbols), batch_size):
                 batch = selected_symbols[i:i + batch_size]
                 tasks = [process_symbol(symbol, exchange, timeframes) for symbol in batch]
