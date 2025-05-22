@@ -85,7 +85,7 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 50:
+            if agreement < 25:
                 return
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
