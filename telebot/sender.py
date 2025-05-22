@@ -11,7 +11,9 @@ import requests
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
-WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"  # Hard-coded
+WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
+MIN_VOLUME = 1000000  # $1M minimum 24h volume
+MIN_AGREEMENT = 3  # At least 3/4 timeframe agreement
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -23,23 +25,28 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-def calculate_tp_probabilities(indicators):
+def calculate_tp_probabilities(indicators, historical_data=None):
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
     if "Bullish MACD" in indicators: score += 2
     if "Strong Trend" in indicators: score += 2
     if "Overbought Stochastic" in indicators: score += 1
+    if "Oversold Stochastic" in indicators: score += 1
     if "Above VWAP" in indicators: score += 1
     if "Hammer" in indicators: score += 1
     if "Near Support" in indicators: score += 2
     if "Near Resistance" in indicators: score -= 1
 
-    if score >= 7:
-        return {"TP1": 90, "TP2": 70, "TP3": 50}
-    elif score >= 5:
-        return {"TP1": 76, "TP2": 54, "TP3": 38}
+    if historical_data is None:
+        if score >= 7:
+            return {"TP1": 90, "TP2": 70, "TP3": 50}
+        elif score >= 5:
+            return {"TP1": 76, "TP2": 54, "TP3": 38}
+        else:
+            return {"TP1": 60, "TP2": 40, "TP3": 20}
     else:
+        logger.info("Historical data TP probability calculation not implemented")
         return {"TP1": 60, "TP2": 40, "TP3": 20}
 
 def determine_leverage(indicators):
@@ -52,6 +59,7 @@ def determine_leverage(indicators):
     if "Near Support" in indicators: score += 1
     if "Near Resistance" in indicators: score -= 1
     if "Overbought Stochastic" in indicators: score -= 1
+    if "Oversold Stochastic" in indicators: score -= 1
 
     if score >= 5:
         return "40x"
@@ -64,15 +72,23 @@ def determine_leverage(indicators):
 
 def get_24h_volume(symbol):
     try:
-        symbol_clean = symbol.replace("/", "").upper()  # Convert ETH/USDT to ETHUSDT
+        symbol_clean = symbol.replace("/", "").upper()
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
         response = requests.get(url)
         data = response.json()
         quote_volume = float(data["quoteVolume"])
-        return f"${quote_volume:,.2f}"
+        return quote_volume, f"${quote_volume:,.2f}"
     except Exception as e:
         logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
-        return "$0.00"
+        return 0, "$0.00"
+
+def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
+    if "USDT" in symbol and symbol != "USDT/USD":
+        max_tp_percent = 0.01  # 1% max for stablecoins
+        tp1 = min(tp1, entry * (1 + max_tp_percent))
+        tp2 = min(tp2, entry * (1 + max_tp_percent * 1.5))
+        tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
+    return tp1, tp2, tp3
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -94,7 +110,7 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        file_path = 'logs/signals.csv'
+        file_path = 'logs/signals_log_new.csv'
         if not os.path.exists(file_path):
             await update.message.reply_text("No signals available.")
             return
@@ -105,15 +121,30 @@ async def signal(update, context):
         latest_signal = df.iloc[-1].to_dict()
         conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
         
+        # Validate volume and agreement
+        volume, volume_str = get_24h_volume(latest_signal['symbol'])
+        agreement = latest_signal.get('agreement', 0) / 100 * 3
+        if volume < MIN_VOLUME:
+            logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
+            await update.message.reply_text("Insufficient signal volume.")
+            return
+        if agreement < MIN_AGREEMENT:
+            logger.warning(f"Insufficient timeframe agreement for {latest_signal['symbol']}: {agreement}/3")
+            await update.message.reply_text("Insufficient timeframe agreement for signal.")
+            return
+
         # Update dynamic fields
         probabilities = calculate_tp_probabilities(latest_signal['conditions'])
         latest_signal['tp1_possibility'] = probabilities['TP1']
         latest_signal['tp2_possibility'] = probabilities['TP2']
         latest_signal['tp3_possibility'] = probabilities['TP3']
         latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
-        latest_signal['quote_volume_24h'] = get_24h_volume(latest_signal['symbol'])
+        latest_signal['quote_volume_24h'] = volume_str
         latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
-        
+        latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'] = adjust_tp_for_stablecoin(
+            latest_signal['symbol'], latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'], latest_signal['entry']
+        )
+
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {latest_signal['symbol']}\n"
@@ -140,7 +171,7 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        file_path = 'logs/signals.csv'
+        file_path = 'logs/signals_log_new.csv'
         if not os.path.exists(file_path):
             logger.warning("Signals log file not found")
             return None
@@ -209,15 +240,28 @@ async def send_signal(signal):
         bot = telegram.Bot(token=BOT_TOKEN)
         conditions_str = ", ".join(signal.get('conditions', [])) or "None"
         
+        # Validate volume and agreement
+        volume, volume_str = get_24h_volume(signal['symbol'])
+        agreement = signal.get('agreement', 0) / 100 * 3
+        if volume < MIN_VOLUME:
+            logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
+            return
+        if agreement < MIN_AGREEMENT:
+            logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/3")
+            return
+
         # Update dynamic fields
         probabilities = calculate_tp_probabilities(signal.get('conditions', []))
         signal['tp1_possibility'] = probabilities['TP1']
         signal['tp2_possibility'] = probabilities['TP2']
         signal['tp3_possibility'] = probabilities['TP3']
         signal['leverage'] = determine_leverage(signal.get('conditions', []))
-        signal['quote_volume_24h'] = get_24h_volume(signal['symbol'])
+        signal['quote_volume_24h'] = volume_str
         signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-        
+        signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
+            signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
+        )
+
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {signal['symbol']}\n"
@@ -242,7 +286,6 @@ async def send_signal(signal):
         logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
     except Exception as e:
         logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
-        raise
 
 async def start_bot():
     try:
