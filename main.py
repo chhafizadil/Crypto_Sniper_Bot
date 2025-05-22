@@ -57,40 +57,6 @@ def save_signal_to_csv(signal):
         logger.error(f"Error saving signal to CSV for {signal['symbol']}: {str(e)}")
         return False
 
-def create_manual_csv():
-    try:
-        signal = {
-            "symbol": "IOTA/USDT",
-            "direction": "BUY",
-            "timeframe": "1h",
-            "trade_duration": "short",
-            "entry": 0.15,
-            "tp1": 0.18,
-            "tp1_possibility": 80.0,
-            "tp2": 0.20,
-            "tp2_possibility": 60.0,
-            "tp3": 0.22,
-            "tp3_possibility": 40.0,
-            "sl": 0.13,
-            "confidence": 75.0,
-            "trade_type": "spot",
-            "leverage": "N/A",
-            "volume": 4600000.0,
-            "quote_volume_24h": 5000000.0,
-            "conditions": "RSI>70,MACD",
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending",
-            "hit_timestamp": None
-        }
-        os.makedirs('logs', exist_ok=True)
-        file_path = 'logs/signals.csv'
-        df = pd.DataFrame([signal])
-        df.to_csv(file_path, index=False)
-        logger.info(f"Manual CSV created at {file_path}")
-        return signal  # Return signal for direct sending if needed
-    except Exception as e:
-        logger.error(f"Error creating manual CSV: {str(e)}")
-        return None
 
 async def send_signals_from_csv(csv_path='logs/signals.csv'):
     try:
