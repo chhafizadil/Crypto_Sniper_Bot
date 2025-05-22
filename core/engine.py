@@ -91,7 +91,7 @@ async def run_engine():
 
             logger.info(f"[Engine] [{symbol}] Analyzing symbol")
             try:
-                signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['1h', '4h'])
+                signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
                 if signal and signal["confidence"] >= 65 and signal["tp1_possibility"] >= 65:  # Lowered from 70
                     message = (
                         f"🚨 {signal['symbol']} Signal\n"
