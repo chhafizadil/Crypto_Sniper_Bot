@@ -17,7 +17,7 @@ async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):  # Reduced limit
         logger.error(f"[{symbol}] Failed to fetch OHLCV for {timeframe}: {e}")
         return None
 
-async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','1h', '4h', '1d']):
+async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['1h', '4h',]):
     try:
         signals = []
         for timeframe in timeframes:
