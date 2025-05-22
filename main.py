@@ -1,16 +1,20 @@
 import asyncio
 import ccxt.async_support as ccxt
 import pandas as pd
-import aiosqlite
 import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
-from telebot.sender import send_signal, start_bot
+from telebot.sender import send_signal, start_bot, signals_list
 from utils.logger import logger
 from core.multi_timeframe import multi_timeframe_boost
+import schedule
+import time
 
 app = FastAPI()
+
+# میموری میں سگنلز کی لسٹ (رپورٹ کے لیے)
+signals_list = []
 
 @app.get("/")
 async def root():
@@ -37,83 +41,6 @@ MIN_CONFIDENCE = 65
 COOLDOWN_HOURS = 6
 
 cooldowns = {}
-
-async def init_db():
-    try:
-        os.makedirs('logs', exist_ok=True)
-        async with aiosqlite.connect('logs/signals.db') as db:
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT,
-                    direction TEXT,
-                    entry REAL,
-                    confidence REAL,
-                    timeframe TEXT,
-                    conditions TEXT,
-                    tp1 REAL,
-                    tp2 REAL,
-                    tp3 REAL,
-                    sl REAL,
-                    tp1_possibility REAL,
-                    tp2_possibility REAL,
-                    tp3_possibility REAL,
-                    volume REAL,
-                    trade_type TEXT,
-                    trade_duration TEXT,
-                    timestamp TEXT,
-                    status TEXT,
-                    hit_timestamp TEXT,
-                    quote_volume_24h TEXT,
-                    leverage TEXT,
-                    agreement REAL
-                )
-            ''')
-            await db.commit()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error initializing database: {str(e)}")
-
-async def save_signal_to_db(signal):
-    try:
-        conditions_str = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
-        async with aiosqlite.connect('logs/signals.db') as db:
-            await db.execute('''
-                INSERT INTO signals (
-                    symbol, direction, entry, confidence, timeframe, conditions,
-                    tp1, tp2, tp3, sl, tp1_possibility, tp2_possibility,
-                    tp3_possibility, volume, trade_type, trade_duration, timestamp,
-                    status, hit_timestamp, quote_volume_24h, leverage, agreement
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                signal.get('symbol'), signal.get('direction'), signal.get('entry'),
-                signal.get('confidence'), signal.get('timeframe'), conditions_str,
-                signal.get('tp1'), signal.get('tp2'), signal.get('tp3'), signal.get('sl'),
-                signal.get('tp1_possibility'), signal.get('tp2_possibility'),
-                signal.get('tp3_possibility'), signal.get('volume'), signal.get('trade_type'),
-                signal.get('trade_duration'), signal.get('timestamp'), signal.get('status'),
-                signal.get('hit_timestamp'), signal.get('quote_volume_24h'), signal.get('leverage'),
-                signal.get('agreement')
-            ))
-            await db.commit()
-        logger.info(f"Signal saved to database: {signal['symbol']} at {signal['timestamp']}")
-    except Exception as e:
-        logger.error(f"Error saving signal to database for {signal.get('symbol','unknown')}: {str(e)}")
-
-async def send_signals_from_db():
-    try:
-        async with aiosqlite.connect('logs/signals.db') as db:
-            cursor = await db.execute("SELECT * FROM signals WHERE status = 'pending'")
-            rows = await cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-        df = pd.DataFrame(rows, columns=columns)
-        for _, signal in df.iterrows():
-            signal_dict = signal.to_dict()
-            logger.info(f"Sending signal from database: {signal_dict.get('symbol', 'N/A')} - {signal_dict.get('direction', 'N/A')}")
-            await send_signal(signal_dict)
-            logger.info(f"[{signal_dict.get('symbol', 'N/A')}] Signal sent from database to Telegram")
-    except Exception as e:
-        logger.error(f"Failed to read database or send signals: {str(e)}")
 
 def is_symbol_on_cooldown(symbol):
     try:
@@ -150,7 +77,9 @@ async def process_symbol(symbol, exchange, timeframes):
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
-            await save_signal_to_db(signal)
+            # سگنل میموری میں شامل کریں
+            signals_list.append(signal)
+            # براہ راست ٹیلی گرام پر بھیجیں
             await send_signal(signal)
             update_cooldown(symbol)
             logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement:.2f}%)")
@@ -201,7 +130,6 @@ async def main_loop():
         })
         logger.info("Binance API connection successful")
         timeframes = ['15m', '1h', '4h', '1d']
-        await init_db()
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
@@ -224,6 +152,24 @@ async def main_loop():
     finally:
         await exchange.close()
 
+def schedule_hourly_report():
+    schedule.every(1).hours.do(asyncio.run, generate_daily_summary_and_send)
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+async def generate_daily_summary_and_send():
+    from telebot.sender import generate_daily_summary
+    report = await generate_daily_summary()
+    if report:
+        bot = telegram.Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+        await bot.send_message(chat_id=os.getenv('TELEGRAM_CHAT_ID'), text=report, parse_mode='Markdown')
+        logger.info("Hourly report sent to Telegram")
+    else:
+        bot = telegram.Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
+        await bot.send_message(chat_id=os.getenv('TELEGRAM_CHAT_ID'), text="No signals available for today.", parse_mode='Markdown')
+        logger.info("No signals for hourly report")
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting bot...")
@@ -231,7 +177,8 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        await send_signals_from_db()
+        # ہر گھنٹے رپورٹ کا شیڈول شروع کریں
+        asyncio.create_task(asyncio.to_thread(schedule_hourly_report))
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
