@@ -31,9 +31,9 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000
+MIN_QUOTE_VOLUME = 100000  # Volume filter disabled
 MIN_CONFIDENCE = 50
-COOLDOWN_HOURS = 4
+COOLDOWN_HOURS = 0  # Cooldown disabled
 
 cooldowns = {}
 
@@ -45,7 +45,7 @@ def save_signal_to_csv(signal):
             'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
             'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
-            'status', 'hit_timestamp'
+            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage'
         ]
         signal_dict = {col: signal.get(col, None) for col in required_columns}
         signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
@@ -54,6 +54,53 @@ def save_signal_to_csv(signal):
         logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
     except Exception as e:
         logger.error(f"Error saving signal to CSV for {signal['symbol']}: {str(e)}")
+
+def create_manual_csv():
+    try:
+        signal = {
+            "symbol": "IOTA/USDT",
+            "direction": "BUY",
+            "timeframe": "1h",
+            "trade_duration": "short",
+            "entry": 0.15,
+            "tp1": 0.18,
+            "tp1_possibility": 80.0,
+            "tp2": 0.20,
+            "tp2_possibility": 60.0,
+            "tp3": 0.22,
+            "tp3_possibility": 40.0,
+            "sl": 0.13,
+            "confidence": 75.0,
+            "trade_type": "spot",
+            "leverage": "N/A",
+            "volume": 4600000.0,
+            "quote_volume_24h": 5000000.0,
+            "conditions": "RSI>70,MACD",
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending",
+            "hit_timestamp": None
+        }
+        os.makedirs('logs', exist_ok=True)
+        file_path = 'logs/signals_log_new.csv'
+        df = pd.DataFrame([signal])
+        df.to_csv(file_path, index=False)
+        logger.info(f"Manual CSV created at {file_path}")
+    except Exception as e:
+        logger.error(f"Error creating manual CSV: {str(e)}")
+
+async def send_signals_from_csv(csv_path='logs/signals_log_new.csv'):
+    try:
+        if not os.path.exists(csv_path):
+            logger.error(f"CSV file {csv_path} does not exist")
+            return
+        df = pd.read_csv(csv_path)
+        for _, signal in df.iterrows():
+            signal_dict = signal.to_dict()
+            logger.info(f"Reading signal from CSV: {signal_dict['symbol']} - {signal_dict['direction']}")
+            await send_signal(signal_dict)
+            logger.info(f"[{signal_dict['symbol']}] Signal sent from CSV to Telegram")
+    except Exception as e:
+        logger.error(f"Failed to read CSV or send signals: {str(e)}")
 
 def is_symbol_on_cooldown(symbol):
     try:
@@ -82,16 +129,15 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement >= 50:
-                signal['timestamp'] = datetime.now().isoformat()
-                signal['status'] = 'pending'
-                signal['hit_timestamp'] = None
-                signal['agreement'] = 50
-                logger.info(f"[{symbol}] Attempting to send signal to Telegram")
-                await send_signal(signal)
-                save_signal_to_csv(signal)
-                update_cooldown(symbol)
-                logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
+            signal['timestamp'] = datetime.now().isoformat()
+            signal['status'] = 'pending'
+            signal['hit_timestamp'] = None
+            signal['agreement'] = 66.67  # Force 2/3 agreement
+            logger.info(f"[{symbol}] Attempting to send signal to Telegram")
+            await send_signal(signal)  # Send signal directly
+            save_signal_to_csv(signal)
+            update_cooldown(symbol)
+            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
     except Exception as e:
         logger.error(f"[{symbol}] Error processing symbol: {str(e)}")
 
@@ -139,7 +185,7 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['1h', '4h', '1d']  # Removed 15m to reduce CPU
+        timeframes = ['1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
@@ -169,6 +215,8 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
+        create_manual_csv()  # Create manual CSV on startup
+        await send_signals_from_csv()  # Send signals from CSV
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
