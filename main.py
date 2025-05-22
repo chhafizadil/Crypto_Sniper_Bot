@@ -31,9 +31,9 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 0  # Volume filter disabled
+MIN_QUOTE_VOLUME = 1000000  # Volume filter disabled
 MIN_CONFIDENCE = 50
-COOLDOWN_HOURS = 0  # Cooldown disabled
+COOLDOWN_HOURS = 4  # Cooldown disabled
 
 cooldowns = {}
 
