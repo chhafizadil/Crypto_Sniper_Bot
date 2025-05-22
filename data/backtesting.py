@@ -3,8 +3,9 @@ import ccxt.async_support as ccxt
 from model.predictor import SignalPredictor
 from data.collector import fetch_realtime_data
 from utils.logger import logger
-import sqlite3
+import aiosqlite
 import asyncio
+from main import get_high_volume_symbols, MIN_QUOTE_VOLUME
 
 async def backtest_signals(symbol: str, timeframe: str = "1h", limit: int = 1000):
     try:
@@ -60,28 +61,26 @@ async def backtest_signals(symbol: str, timeframe: str = "1h", limit: int = 1000
                         status = "sl"
 
                 signal['status'] = status
-                conn = sqlite3.connect('logs/signals.db')
-                cursor = conn.cursor()
                 conditions_str = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
-                cursor.execute('''
-                    INSERT INTO signals (
-                        symbol, direction, entry, confidence, timeframe, conditions,
-                        tp1, tp2, tp3, sl, tp1_possibility, tp2_possibility,
-                        tp3_possibility, volume, trade_type, trade_duration, timestamp,
-                        status, hit_timestamp, quote_volume_24h, leverage, agreement
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    signal.get('symbol'), signal.get('direction'), signal.get('entry'),
-                    signal.get('confidence'), signal.get('timeframe'), conditions_str,
-                    signal.get('tp1'), signal.get('tp2'), signal.get('tp3'), signal.get('sl'),
-                    signal.get('tp1_possibility'), signal.get('tp2_possibility'),
-                    signal.get('tp3_possibility'), signal.get('volume'), signal.get('trade_type'),
-                    signal.get('trade_duration'), signal.get('timestamp'), signal.get('status'),
-                    signal.get('hit_timestamp'), signal.get('quote_volume_24h'), signal.get('leverage'),
-                    signal.get('agreement')
-                ))
-                conn.commit()
-                conn.close()
+                async with aiosqlite.connect('logs/signals.db') as db:
+                    await db.execute('''
+                        INSERT INTO signals (
+                            symbol, direction, entry, confidence, timeframe, conditions,
+                            tp1, tp2, tp3, sl, tp1_possibility, tp2_possibility,
+                            tp3_possibility, volume, trade_type, trade_duration, timestamp,
+                            status, hit_timestamp, quote_volume_24h, leverage, agreement
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        signal.get('symbol'), signal.get('direction'), signal.get('entry'),
+                        signal.get('confidence'), signal.get('timeframe'), conditions_str,
+                        signal.get('tp1'), signal.get('tp2'), signal.get('tp3'), signal.get('sl'),
+                        signal.get('tp1_possibility'), signal.get('tp2_possibility'),
+                        signal.get('tp3_possibility'), signal.get('volume'), signal.get('trade_type'),
+                        signal.get('trade_duration'), signal.get('timestamp'), signal.get('status'),
+                        signal.get('hit_timestamp'), signal.get('quote_volume_24h'), signal.get('leverage'),
+                        signal.get('agreement')
+                    ))
+                    await db.commit()
                 results[status] += 1
                 results['total_signals'] += 1
 
@@ -108,14 +107,14 @@ async def backtest_signals(symbol: str, timeframe: str = "1h", limit: int = 1000
 
 async def run_backtesting_for_all_symbols():
     try:
-        exchange = ccxt.async_support.binance({
+        exchange = ccxt.binance({
             'apiKey': os.getenv('BINANCE_API_KEY'),
             'secret': os.getenv('BINANCE_API_SECRET'),
             'enableRateLimit': True
         })
-        timeframes = ['1h', '4h', '1d']
+        timeframes = ['15m', '1h', '4h', '1d']
         high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
-        for symbol in high_volume_symbols[:10]:  # Limit to top 10 symbols
+        for symbol in high_volume_symbols[:10]:
             for timeframe in timeframes:
                 await backtest_signals(symbol, timeframe)
         await exchange.close()
@@ -123,5 +122,4 @@ async def run_backtesting_for_all_symbols():
         logger.error(f"Error in backtesting loop: {str(e)}")
 
 if __name__ == "__main__":
-    from main import get_high_volume_symbols, MIN_QUOTE_VOLUME
     asyncio.run(run_backtesting_for_all_symbols())
