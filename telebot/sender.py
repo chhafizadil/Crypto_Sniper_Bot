@@ -1,19 +1,19 @@
 import telegram
 import asyncio
 import pandas as pd
+import sqlite3
 from telegram.ext import Application, CommandHandler
-from telegram.error import Conflict
+from telegram.error import Conflict, RetryAfter
 from utils.logger import logger
 from datetime import datetime, timedelta
 import os
 import pytz
 import requests
+import time
 
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
-WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 1000000  # $1M minimum 24h volume
-MIN_AGREEMENT = 3  # At least 3/4 timeframe agreement
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', "https://your-koyeb-app.koyeb.app/webhook")
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -25,29 +25,56 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-def calculate_tp_probabilities(indicators, historical_data=None):
+def get_historical_probabilities(symbol):
+    try:
+        conn = sqlite3.connect('logs/signals.db')
+        df = pd.read_sql_query("SELECT * FROM signals WHERE symbol = ? AND status != 'pending'", conn, params=(symbol,))
+        conn.close()
+        if df.empty:
+            return {"TP1": 60, "TP2": 40, "TP3": 20}
+        total = len(df)
+        tp1_hits = len(df[df['status'] == 'tp1']) + len(df[df['status'] == 'tp2']) + len(df[df['status'] == 'tp3'])
+        tp2_hits = len(df[df['status'] == 'tp2']) + len(df[df['status'] == 'tp3'])
+        tp3_hits = len(df[df['status'] == 'tp3'])
+        return {
+            "TP1": (tp1_hits / total * 100) if total > 0 else 60,
+            "TP2": (tp2_hits / total * 100) if total > 0 else 40,
+            "TP3": (tp3_hits / total * 100) if total > 0 else 20
+        }
+    except Exception as e:
+        logger.error(f"Error fetching historical probabilities for {symbol}: {str(e)}")
+        return {"TP1": 60, "TP2": 40, "TP3": 20}
+
+def calculate_tp_probabilities(indicators, symbol):
+    base_prob = get_historical_probabilities(symbol)
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
     if "Bullish MACD" in indicators: score += 2
     if "Strong Trend" in indicators: score += 2
     if "Overbought Stochastic" in indicators: score += 1
-    if "Oversold Stochastic" in indicators: score += 1
     if "Above VWAP" in indicators: score += 1
     if "Hammer" in indicators: score += 1
     if "Near Support" in indicators: score += 2
     if "Near Resistance" in indicators: score -= 1
+    boost = min(score * 5, 20)  # Max 20% boost
+    return {
+        "TP1": min(base_prob["TP1"] + boost, 95),
+        "TP2": min(base_prob["TP2"] + boost, 75),
+        "TP3": min(base_prob["TP3"] + boost, 55)
+    }
 
-    if historical_data is None:
-        if score >= 7:
-            return {"TP1": 90, "TP2": 70, "TP3": 50}
-        elif score >= 5:
-            return {"TP1": 76, "TP2": 54, "TP3": 38}
-        else:
-            return {"TP1": 60, "TP2": 40, "TP3": 20}
+def adjust_take_profits(signal):
+    entry = signal['entry']
+    is_stablecoin = 'USDT' in signal['symbol'] and signal['symbol'] != 'USDT/BUSD'
+    if is_stablecoin:
+        tp_range = (0.01, 0.02)  # 1-2% for stablecoins
     else:
-        logger.info("Historical data TP probability calculation not implemented")
-        return {"TP1": 60, "TP2": 40, "TP3": 20}
+        tp_range = (0.05, 0.10)  # 5-10% for volatile pairs
+    signal['tp1'] = min(signal['tp1'], entry * (1 + tp_range[0]))
+    signal['tp2'] = min(signal['tp2'], entry * (1 + tp_range[0] * 1.5))
+    signal['tp3'] = min(signal['tp3'], entry * (1 + tp_range[1]))
+    return signal
 
 def determine_leverage(indicators):
     score = 0
@@ -59,8 +86,6 @@ def determine_leverage(indicators):
     if "Near Support" in indicators: score += 1
     if "Near Resistance" in indicators: score -= 1
     if "Overbought Stochastic" in indicators: score -= 1
-    if "Oversold Stochastic" in indicators: score -= 1
-
     if score >= 5:
         return "40x"
     elif score >= 3:
@@ -74,21 +99,13 @@ def get_24h_volume(symbol):
     try:
         symbol_clean = symbol.replace("/", "").upper()
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=5)
         data = response.json()
         quote_volume = float(data["quoteVolume"])
-        return quote_volume, f"${quote_volume:,.2f}"
+        return f"${quote_volume:,.2f}"
     except Exception as e:
         logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
-        return 0, "$0.00"
-
-def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
-    if "USDT" in symbol and symbol != "USDT/USD":
-        max_tp_percent = 0.01  # 1% max for stablecoins
-        tp1 = min(tp1, entry * (1 + max_tp_percent))
-        tp2 = min(tp2, entry * (1 + max_tp_percent * 1.5))
-        tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
-    return tp1, tp2, tp3
+        return "$0.00"
 
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
@@ -110,41 +127,19 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        file_path = 'logs/signals_log_new.csv'
-        if not os.path.exists(file_path):
-            await update.message.reply_text("No signals available.")
-            return
-        df = pd.read_csv(file_path)
+        conn = sqlite3.connect('logs/signals.db')
+        df = pd.read_sql_query("SELECT * FROM signals ORDER BY timestamp DESC LIMIT 1", conn)
+        conn.close()
         if df.empty:
             await update.message.reply_text("No signals available.")
             return
         latest_signal = df.iloc[-1].to_dict()
-        conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
+        conditions_str = latest_signal['conditions']
         
-        # Validate volume and agreement
-        volume, volume_str = get_24h_volume(latest_signal['symbol'])
-        agreement = latest_signal.get('agreement', 0) / 100 * 3
-        if volume < MIN_VOLUME:
-            logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
-            await update.message.reply_text("Insufficient signal volume.")
-            return
-        if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {latest_signal['symbol']}: {agreement}/3")
-            await update.message.reply_text("Insufficient timeframe agreement for signal.")
-            return
-
-        # Update dynamic fields
-        probabilities = calculate_tp_probabilities(latest_signal['conditions'])
-        latest_signal['tp1_possibility'] = probabilities['TP1']
-        latest_signal['tp2_possibility'] = probabilities['TP2']
-        latest_signal['tp3_possibility'] = probabilities['TP3']
         latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
-        latest_signal['quote_volume_24h'] = volume_str
+        latest_signal['quote_volume_24h'] = get_24h_volume(latest_signal['symbol'])
         latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
-        latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'] = adjust_tp_for_stablecoin(
-            latest_signal['symbol'], latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'], latest_signal['entry']
-        )
-
+        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {latest_signal['symbol']}\n"
@@ -171,11 +166,9 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        file_path = 'logs/signals_log_new.csv'
-        if not os.path.exists(file_path):
-            logger.warning("Signals log file not found")
-            return None
-        df = pd.read_csv(file_path)
+        conn = sqlite3.connect('logs/signals.db')
+        df = pd.read_sql_query("SELECT * FROM signals", conn)
+        conn.close()
         today = datetime.now().strftime('%Y-%m-%d')
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
@@ -183,20 +176,20 @@ async def generate_daily_summary():
             logger.info("No signals found for today")
             return None
         total_signals = len(df_today)
-        long_signals = len(df_today[df_today['direction'] == 'Long'])
-        short_signals = len(df_today[df_today['direction'] == 'Short'])
-        successful_signals = len(df_today[df_today['status'] == 'successful'])
-        failed_signals = len(df_today[df_today['status'] == 'failed'])
+        long_signals = len(df_today[df_today['direction'] == 'LONG'])
+        short_signals = len(df_today[df_today['direction'] == 'SHORT'])
+        successful_signals = len(df_today[df_today['status'] == 'tp1']) + len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
+        failed_signals = len(df_today[df_today['status'] == 'sl'])
         pending_signals = len(df_today[df_today['status'] == 'pending'])
         successful_percentage = (successful_signals / total_signals * 100) if total_signals > 0 else 0
         avg_confidence = df_today['confidence'].mean() if total_signals > 0 else 0
         top_symbol = df_today['symbol'].mode()[0] if total_signals > 0 else "N/A"
         most_active_timeframe = df_today['timeframe'].mode()[0] if total_signals > 0 else "N/A"
         total_volume = df_today['volume'].sum() if total_signals > 0 else 0
-        tp1_hits = len(df_today[df_today.get('tp1_hit', False) == True]) if 'tp1_hit' in df_today else 0
-        tp2_hits = len(df_today[df_today.get('tp2_hit', False) == True]) if 'tp2_hit' in df_today else 0
-        tp3_hits = len(df_today[df_today.get('tp3_hit', False) == True]) if 'tp3_hit' in df_today else 0
-        sl_hits = len(df_today[df_today.get('sl_hit', False) == True]) if 'sl_hit' in df_today else 0
+        tp1_hits = len(df_today[df_today['status'] == 'tp1']) + len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
+        tp2_hits = len(df_today[df_today['status'] == 'tp2']) + len(df_today[df_today['status'] == 'tp3'])
+        tp3_hits = len(df_today[df_today['status'] == 'tp3'])
+        sl_hits = len(df_today[df_today['status'] == 'sl'])
         report = (
             f"📊 *Daily Trading Summary ({today})*\n"
             f"📈 Total Signals: {total_signals}\n"
@@ -240,28 +233,15 @@ async def send_signal(signal):
         bot = telegram.Bot(token=BOT_TOKEN)
         conditions_str = ", ".join(signal.get('conditions', [])) or "None"
         
-        # Validate volume and agreement
-        volume, volume_str = get_24h_volume(signal['symbol'])
-        agreement = signal.get('agreement', 0) / 100 * 3
-        if volume < MIN_VOLUME:
-            logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
-            return
-        if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/3")
-            return
-
-        # Update dynamic fields
-        probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+        signal = adjust_take_profits(signal)
+        probabilities = calculate_tp_probabilities(signal.get('conditions', []), signal['symbol'])
         signal['tp1_possibility'] = probabilities['TP1']
         signal['tp2_possibility'] = probabilities['TP2']
         signal['tp3_possibility'] = probabilities['TP3']
         signal['leverage'] = determine_leverage(signal.get('conditions', []))
-        signal['quote_volume_24h'] = volume_str
+        signal['quote_volume_24h'] = get_24h_volume(signal['symbol'])
         signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-        signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
-            signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
-        )
-
+        
         message = (
             f"📈 *Trading Signal*\n"
             f"💱 Symbol: {signal['symbol']}\n"
@@ -281,11 +261,22 @@ async def send_signal(signal):
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {signal['timestamp']}"
         )
-        logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram")
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-        logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
+        for attempt in range(3):
+            try:
+                await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+                logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
+                return
+            except RetryAfter as e:
+                logger.warning(f"Rate limit hit, retrying in {e.retry_after} seconds...")
+                await asyncio.sleep(e.retry_after)
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed to send signal for {signal['symbol']}: {str(e)}")
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2)
     except Exception as e:
         logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
+        raise
 
 async def start_bot():
     try:
