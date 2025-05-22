@@ -11,9 +11,9 @@ import pytz
 import requests
 import time
 
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', "https://your-koyeb-app.koyeb.app/webhook")
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
+WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"  # Hard-coded
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
