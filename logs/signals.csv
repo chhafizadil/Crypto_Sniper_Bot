@@ -1,0 +1,2 @@
+symbol,direction,timeframe,entry,tp1,tp1_possibility,sl,confidence,volume,trade_type,trade_duration,timestamp,status,hit_timestamp,agreement,conditions
+IOTA/USDT,BUY,1h,0.15,0.18,80,0.13,75,4600000,spot,short,2025-05-22T06:08:00,pending,,66.67,"RSI>70,MACD"
