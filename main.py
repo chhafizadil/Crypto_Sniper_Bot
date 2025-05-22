@@ -1,6 +1,7 @@
 import asyncio
 import ccxt.async_support as ccxt
 import pandas as pd
+import sqlite3
 import os
 from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
@@ -31,43 +32,91 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 1000000  # Volume filter disabled (change if needed)
+MIN_QUOTE_VOLUME = 500000
 MIN_CONFIDENCE = 65
-COOLDOWN_HOURS = 6  # Cooldown disabled (set > 0 to enable cooldown)
+COOLDOWN_HOURS = 6
 
 cooldowns = {}
 
-def save_signal_to_csv(signal):
+def init_db():
     try:
         os.makedirs('logs', exist_ok=True)
-        file_path = 'logs/signals.csv'
-        required_columns = [
-            'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
-            'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
-            'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
-            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement'
-        ]
-        signal_dict = {col: signal.get(col, None) for col in required_columns}
-        signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
-        df = pd.DataFrame([signal_dict])
-        df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
-        logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
+        conn = sqlite3.connect('logs/signals.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                direction TEXT,
+                entry REAL,
+                confidence REAL,
+                timeframe TEXT,
+                conditions TEXT,
+                tp1 REAL,
+                tp2 REAL,
+                tp3 REAL,
+                sl REAL,
+                tp1_possibility REAL,
+                tp2_possibility REAL,
+                tp3_possibility REAL,
+                volume REAL,
+                trade_type TEXT,
+                trade_duration TEXT,
+                timestamp TEXT,
+                status TEXT,
+                hit_timestamp TEXT,
+                quote_volume_24h TEXT,
+                leverage TEXT,
+                agreement REAL
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully")
     except Exception as e:
-        logger.error(f"Error saving signal to CSV for {signal.get('symbol','unknown')}: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}")
 
-async def send_signals_from_csv(csv_path='logs/signals.csv'):
+def save_signal_to_db(signal):
     try:
-        if not os.path.exists(csv_path):
-            logger.warning(f"CSV file {csv_path} does not exist. No signals to send.")
-            return
-        df = pd.read_csv(csv_path)
+        conn = sqlite3.connect('logs/signals.db')
+        cursor = conn.cursor()
+        conditions_str = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
+        cursor.execute('''
+            INSERT INTO signals (
+                symbol, direction, entry, confidence, timeframe, conditions,
+                tp1, tp2, tp3, sl, tp1_possibility, tp2_possibility,
+                tp3_possibility, volume, trade_type, trade_duration, timestamp,
+                status, hit_timestamp, quote_volume_24h, leverage, agreement
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            signal.get('symbol'), signal.get('direction'), signal.get('entry'),
+            signal.get('confidence'), signal.get('timeframe'), conditions_str,
+            signal.get('tp1'), signal.get('tp2'), signal.get('tp3'), signal.get('sl'),
+            signal.get('tp1_possibility'), signal.get('tp2_possibility'),
+            signal.get('tp3_possibility'), signal.get('volume'), signal.get('trade_type'),
+            signal.get('trade_duration'), signal.get('timestamp'), signal.get('status'),
+            signal.get('hit_timestamp'), signal.get('quote_volume_24h'), signal.get('leverage'),
+            signal.get('agreement')
+        ))
+        conn.commit()
+        logger.info(f"Signal saved to database: {signal['symbol']} at {signal['timestamp']}")
+    except Exception as e:
+        logger.error(f"Error saving signal to database for {signal.get('symbol','unknown')}: {str(e)}")
+    finally:
+        conn.close()
+
+async def send_signals_from_db():
+    try:
+        conn = sqlite3.connect('logs/signals.db')
+        df = pd.read_sql_query("SELECT * FROM signals WHERE status = 'pending'", conn)
+        conn.close()
         for _, signal in df.iterrows():
             signal_dict = signal.to_dict()
-            logger.info(f"Sending signal from CSV: {signal_dict.get('symbol', 'N/A')} - {signal_dict.get('direction', 'N/A')}")
+            logger.info(f"Sending signal from database: {signal_dict.get('symbol', 'N/A')} - {signal_dict.get('direction', 'N/A')}")
             await send_signal(signal_dict)
-            logger.info(f"[{signal_dict.get('symbol', 'N/A')}] Signal sent from CSV to Telegram")
+            logger.info(f"[{signal_dict.get('symbol', 'N/A')}] Signal sent from database to Telegram")
     except Exception as e:
-        logger.error(f"Failed to read CSV or send signals: {str(e)}")
+        logger.error(f"Failed to read database or send signals: {str(e)}")
 
 def is_symbol_on_cooldown(symbol):
     try:
@@ -97,15 +146,17 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
+            if agreement < 75:  # 3/4 agreement = 75%
+                logger.warning(f"[{symbol}] Insufficient timeframe agreement: {agreement:.2f}%")
+                return
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
-            logger.info(f"[{symbol}] Sending signal to Telegram")
+            save_signal_to_db(signal)  # Save before sending
             await send_signal(signal)
-            save_signal_to_csv(signal)
             update_cooldown(symbol)
-            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
+            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement:.2f}%)")
         else:
             logger.info(f"[{symbol}] No signal or confidence below threshold ({signal.get('confidence',0) if signal else 'N/A'}%)")
     except Exception as e:
@@ -152,7 +203,8 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['1h', '4h', '1d']
+        timeframes = ['15m', '1h', '4h', '1d']
+        init_db()
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
@@ -182,7 +234,7 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        await send_signals_from_csv()  # Send any existing signals on startup
+        await send_signals_from_db()
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
