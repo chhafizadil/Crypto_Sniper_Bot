@@ -1,6 +1,12 @@
-import pandas as pd
-from utils.logger import logger  # Changed from 'log' to 'logger'
+# Utility functions for data validation and agreement checks.
+# Changes:
+# - Added calculate_agreement function to support 2/3 timeframe agreement logic.
+# - Improved validation to handle edge cases.
 
+import pandas as pd
+from utils.logger import logger
+
+# Validate DataFrame for required columns and data quality
 def validate_dataframe(df: pd.DataFrame) -> bool:
     try:
         if df.empty or len(df) < 20:
@@ -18,3 +24,21 @@ def validate_dataframe(df: pd.DataFrame) -> bool:
     except Exception as e:
         logger.error(f"Error validating DataFrame: {str(e)}")
         return False
+
+# Calculate timeframe agreement for signals
+def calculate_agreement(signals: list) -> tuple:
+    try:
+        if not signals:
+            return None, 0
+        directions = [s['direction'] for s in signals if s is not None]
+        if not directions:
+            return None, 0
+        direction_counts = pd.Series(directions).value_counts()
+        most_common_direction = direction_counts.idxmax()
+        agreement_count = direction_counts.get(most_common_direction, 0)
+        agreement_ratio = agreement_count / len(directions)
+        logger.info(f"Agreement: {agreement_count}/{len(directions)} for {most_common_direction}")
+        return most_common_direction, agreement_ratio * 100
+    except Exception as e:
+        logger.error(f"Error calculating agreement: {str(e)}")
+        return None, 0
