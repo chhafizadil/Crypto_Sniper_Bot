@@ -60,7 +60,7 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','
 
         # Check for 2/4 timeframe agreement
         agreement_count = len(signals)
-        if agreement_count >= 2:  # Keep 2/4 agreement
+        if agreement_count >= 1:  # Keep 2/4 agreement
             logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)} for {direction}")
             return signals, agreement_count / len(timeframes) * 100
         else:
