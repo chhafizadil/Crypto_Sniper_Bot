@@ -80,6 +80,10 @@ async def websocket_collector(symbol, timeframe="15m", limit=50):
                 logger.error(f"[{symbol}] Error fetching tickers: {e}")
                 quote_volume_24h = 0
 
+            if quote_volume_24h < 500000:
+                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $500,000)")
+                continue
+
             df['quote_volume_24h'] = quote_volume_24h
             cache_key = f"{symbol}_{timeframe}"
             data_cache[cache_key] = df
