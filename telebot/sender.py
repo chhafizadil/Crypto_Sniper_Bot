@@ -15,8 +15,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 100000  # Reduced from 500,000
-MIN_AGREEMENT = 0.5  # Reduced to 0.5/4
+MIN_VOLUME = 1000000  # Updated to 1,000,000
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -29,7 +28,6 @@ def format_timestamp_to_pk(utc_timestamp_str):
         return utc_timestamp_str
 
 def calculate_tp_probabilities(indicators):
-    # Historical data option removed as per user request
     logger.info("Using fixed TP probabilities: TP1=60%, TP2=40%, TP3=20%")
     return {"TP1": 60, "TP2": 40, "TP3": 20}
 
@@ -128,14 +126,9 @@ async def signal(update, context):
         conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
         
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
-        agreement = latest_signal.get('agreement', 0) / 100 * 4
         if volume < MIN_VOLUME:
             logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
             await update.message.reply_text("Insufficient signal volume.")
-            return
-        if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {latest_signal['symbol']}: {agreement}/4")
-            await update.message.reply_text("Insufficient timeframe agreement for signal.")
             return
 
         probabilities = calculate_tp_probabilities(latest_signal['conditions'])
@@ -248,12 +241,8 @@ async def send_signal(signal):
             conditions_str = ", ".join(signal.get('conditions', [])) or "None"
             
             volume, volume_str = get_24h_volume(signal['symbol'])
-            agreement = signal.get('agreement', 0) / 100 * 4
             if volume < MIN_VOLUME:
                 logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
-                return
-            if agreement < MIN_AGREEMENT:
-                logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/4")
                 return
 
             probabilities = calculate_tp_probabilities(signal.get('conditions', []))
@@ -288,7 +277,7 @@ async def send_signal(signal):
             )
             logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram (Attempt {attempt+1}/{max_retries})")
             await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-            logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
+            logger.info(f"Signal successfully sent to Telegram: {signal['symbol']} - {signal['direction']}")
             return
         except NetworkError as ne:
             logger.error(f"Network error sending signal for {signal['symbol']}: {str(ne)}")
@@ -320,6 +309,13 @@ async def start_bot():
             await bot.delete_webhook(drop_pending_updates=True)
             await bot.set_webhook(url=WEBHOOK_URL)
             logger.info(f"Webhook reset to {WEBHOOK_URL}")
+
+        # Test Telegram API
+        try:
+            await bot.send_message(chat_id=CHAT_ID, text="Bot initialized successfully!")
+            logger.info("Test message sent to Telegram")
+        except Exception as e:
+            logger.error(f"Failed to send test message: {str(e)}")
 
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
