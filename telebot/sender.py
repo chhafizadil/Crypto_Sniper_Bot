@@ -2,18 +2,21 @@ import telegram
 import asyncio
 import pandas as pd
 from telegram.ext import Application, CommandHandler
-from telegram.error import Conflict
+from telegram.error import Conflict, NetworkError, TelegramError
 from utils.logger import logger
 from datetime import datetime, timedelta
 import os
 import pytz
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 500000  # Set to 500,000 USD
-MIN_AGREEMENT = 2  # Set to 2/4
+MIN_VOLUME = 500000  # 500,000 USD
+MIN_AGREEMENT = 1  # Relaxed to 1/4 for more signals
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -74,9 +77,9 @@ def get_24h_volume(symbol):
     try:
         symbol_clean = symbol.replace("/", "").upper()
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
-        response = requests.get(url)
+        response = requests.get(url, timeout=5)
         data = response.json()
-        quote_volume = float(data["quoteVolume"])
+        quote_volume = float(data.get("quoteVolume", 0))
         return quote_volume, f"${quote_volume:,.2f}"
     except Exception as e:
         logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
@@ -101,16 +104,38 @@ async def help(update, context):
         "/report - Get detailed daily trading report\n"
         "/status - Check bot status\n"
         "/signal - Get the latest signal\n"
+        "/test - Test bot connectivity\n"
         "/help - Show this help message"
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
+async def test(update, context):
+    try:
+        await update.message.reply_text("Test message from Crypto Signal Bot!")
+        logger.info("Test message sent successfully")
+    except Exception as e:
+        logger.error(f"Error sending test message: {str(e)}")
+        await update.message.reply_text(f"Error sending test message: {str(e)}")
+
 async def status(update, context):
-    await update.message.reply_text("🟢 Bot is running normally. Connected to Telegram and logging signals.", parse_mode='Markdown')
+    try:
+        bot = telegram.Bot(token=BOT_TOKEN)
+        bot_info = await bot.get_me()
+        webhook_info = await bot.get_webhook_info()
+        status_text = (
+            f"🟢 Bot is running normally\n"
+            f"🤖 Bot: @{bot_info.username}\n"
+            f"🌐 Webhook: {webhook_info.url or 'Not set'}\n"
+            f"📡 Pending Updates: {webhook_info.pending_update_count or 0}"
+        )
+        await update.message.reply_text(status_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error checking status: {str(e)}")
+        await update.message.reply_text("🔴 Error checking bot status.", parse_mode='Markdown')
 
 async def signal(update, context):
     try:
-        file_path = 'logs/signals_log_new.csv'
+        file_path = 'logs/signals.csv'  # Updated to match main.py
         if not os.path.exists(file_path):
             await update.message.reply_text("No signals available.")
             return
@@ -123,7 +148,7 @@ async def signal(update, context):
         
         # Validate volume and agreement
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
-        agreement = latest_signal.get('agreement', 0) / 100 * 4  # Changed to 4 for 2/4 check
+        agreement = latest_signal.get('agreement', 0) / 100 * 4
         if volume < MIN_VOLUME:
             logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
             await update.message.reply_text("Insufficient signal volume.")
@@ -171,20 +196,20 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        file_path = 'logs/signals_log_new.csv'
+        file_path = 'logs/signals.csv'  # Updated to match main.py
         if not os.path.exists(file_path):
             logger.warning("Signals log file not found")
             return None
         df = pd.read_csv(file_path)
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now(pytz.timezone("Asia/Karachi")).date()
         df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df_today = df[df['timestamp'].dt.date == pd.to_datetime(today).date()]
+        df_today = df[df['timestamp'].dt.date == today]
         if df_today.empty:
             logger.info("No signals found for today")
             return None
         total_signals = len(df_today)
-        long_signals = len(df_today[df_today['direction'] == 'Long'])
-        short_signals = len(df_today[df_today['direction'] == 'Short'])
+        long_signals = len(df_today[df_today['direction'] == 'LONG'])  # Updated to match direction case
+        short_signals = len(df_today[df_today['direction'] == 'SHORT'])
         successful_signals = len(df_today[df_today['status'] == 'successful'])
         failed_signals = len(df_today[df_today['status'] == 'failed'])
         pending_signals = len(df_today[df_today['status'] == 'pending'])
@@ -213,7 +238,7 @@ async def generate_daily_summary():
             f"   - TP3 Hit: {tp3_hits}\n"
             f"   - SL Hit: {sl_hits}\n"
             f"   - Pending: {pending_signals}\n"
-            f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"Generated at: {datetime.now(pytz.timezone('Asia/Karachi')).strftime('%Y-%m-%d %H:%M:%S')}"
         )
         logger.info("Daily report generated successfully")
         return report
@@ -242,7 +267,7 @@ async def send_signal(signal):
         
         # Validate volume and agreement
         volume, volume_str = get_24h_volume(signal['symbol'])
-        agreement = signal.get('agreement', 0) / 100 * 4  # Changed to 4 for 2/4 check
+        agreement = signal.get('agreement', 0) / 100 * 4
         if volume < MIN_VOLUME:
             logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
             return
@@ -284,22 +309,40 @@ async def send_signal(signal):
         logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram")
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
         logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
+    except NetworkError as ne:
+        logger.error(f"Network error sending signal for {signal['symbol']}: {str(ne)}")
+    except TelegramError as te:
+        logger.error(f"Telegram error sending signal for {signal['symbol']}: {str(te)}")
     except Exception as e:
         logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
 
 async def start_bot():
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Telegram webhook deleted successfully")
-        await bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
+        # Check and delete existing webhook
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Telegram webhook deleted successfully")
+        except Exception as e:
+            logger.warning(f"Error deleting webhook: {str(e)}")
+        
+        # Set new webhook
+        try:
+            await bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Webhook set to {WEBHOOK_URL}")
+        except Conflict:
+            logger.warning("Webhook conflict detected, attempting to reset")
+            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Webhook reset to {WEBHOOK_URL}")
+
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("summary", summary))
         application.add_handler(CommandHandler("report", report))
         application.add_handler(CommandHandler("status", status))
         application.add_handler(CommandHandler("signal", signal))
+        application.add_handler(CommandHandler("test", test))
         application.add_handler(CommandHandler("help", help))
         await application.initialize()
         await application.start()
