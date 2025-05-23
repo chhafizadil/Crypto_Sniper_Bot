@@ -17,7 +17,7 @@ async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):
         logger.error(f"[{symbol}] Failed to fetch OHLCV for {timeframe}: {e}")
         return None
 
-async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', '1h', '4h', '1d']):
+async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','1h', '4h', '1d']):
     try:
         signals = []
         for timeframe in timeframes:
@@ -38,8 +38,12 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', 
             try:
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume_24h = ticker.get('quoteVolume', 0)
-                if quote_volume_24h < 500000:
-                    logger.warning(f"[{symbol}] Low volume on {timeframe}: ${quote_volume_24h:,.2f} < $500,000")
+                base_volume = ticker.get('baseVolume', 0)
+                last_price = ticker.get('last', 0)
+                if quote_volume_24h == 0 and base_volume > 0 and last_price > 0:
+                    quote_volume_24h = base_volume * last_price
+                if quote_volume_24h < 100000:  # Reduced from 500,000
+                    logger.warning(f"[{symbol}] Low volume on {timeframe}: ${quote_volume_24h:,.2f} < $100,000")
                     continue
             except Exception as e:
                 logger.error(f"[{symbol}] Error fetching ticker for volume check: {str(e)}")
@@ -53,7 +57,7 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', 
                 timeframe_direction = "SHORT"
 
             # Volume filter
-            if latest["volume"] < 1.5 * latest["volume_sma_20"]:
+            if latest["volume"] < 1.2 * latest["volume_sma_20"]:  # Reduced from 1.5x
                 logger.warning(f"[{symbol}] Low volume on {timeframe}")
                 continue
 
@@ -71,7 +75,7 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', 
 
         # Check for 1/4 timeframe agreement
         agreement_count = len(signals)
-        if agreement_count >= 1:  # Relaxed to 1/4
+        if agreement_count >= 1:  # Reduced from 2/4
             logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)} for {direction}")
             return signals, agreement_count / len(timeframes) * 100
         else:
