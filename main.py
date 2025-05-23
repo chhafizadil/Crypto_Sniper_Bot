@@ -31,9 +31,9 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 500000  # Volume filter disabled (change if needed)
+MIN_QUOTE_VOLUME = 500000  # Set to 500,000 USD
 MIN_CONFIDENCE = 65
-COOLDOWN_HOURS = 6  # Cooldown disabled (set > 0 to enable cooldown)
+COOLDOWN_HOURS = 6
 
 cooldowns = {}
 
@@ -97,15 +97,35 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
+            if agreement < 50:  # 2/4 agreement (0.5 * 100)
+                logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 50%")
+                return
+
+            # Additional accuracy conditions
+            df = await exchange.fetch_ohlcv(symbol, signal['timeframe'], limit=50)
+            df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            latest = df.iloc[-1]
+            ticker = await exchange.fetch_ticker(symbol)
+            if ticker['quoteVolume'] < MIN_QUOTE_VOLUME:
+                logger.info(f"[{symbol}] Signal rejected: Quote volume ${ticker['quoteVolume']:,.2f} < ${MIN_QUOTE_VOLUME}")
+                return
+            if signal['direction'] == 'LONG' and latest['close'] <= latest['open']:
+                logger.info(f"[{symbol}] Signal rejected: Close {latest['close']:.2f} <= Open {latest['open']:.2f}")
+                return
+            if signal['direction'] == 'SHORT' and latest['close'] >= latest['open']:
+                logger.info(f"[{symbol}] Signal rejected: Close {latest['close']:.2f} >= Open {latest['open']:.2f}")
+                return
+
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
+            signal['quote_volume_24h'] = ticker['quoteVolume']
             logger.info(f"[{symbol}] Sending signal to Telegram")
             await send_signal(signal)
             save_signal_to_csv(signal)
             update_cooldown(symbol)
-            logger.info(f"✅ Signal generated for {symbol} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
+            logger.info(f"✅ Signal generated for {signal['symbol']} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
         else:
             logger.info(f"[{symbol}] No signal or confidence below threshold ({signal.get('confidence',0) if signal else 'N/A'}%)")
     except Exception as e:
@@ -182,7 +202,7 @@ async def startup_event():
         application = await start_bot()
         app.state.telegram_application = application
         logger.info("Telegram application stored in app state")
-        await send_signals_from_csv()  # Send any existing signals on startup
+        await send_signals_from_csv()
         asyncio.create_task(main_loop())
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
