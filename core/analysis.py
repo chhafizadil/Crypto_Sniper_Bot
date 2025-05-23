@@ -14,7 +14,7 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
             try:
                 logger.info(f"[{symbol}] Fetching OHLCV data for {timeframe}")
                 df = await fetch_realtime_data(symbol, timeframe, limit=50)
-                if df is None or len(df) < 30:  # 50 سے 30 تک کم کیا
+                if df is None or len(df) < 30:
                     logger.warning(f"[{symbol}] Insufficient data for {timeframe}: {len(df) if df is not None else 'None'}")
                     signals[timeframe] = None
                     continue
@@ -38,14 +38,48 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
         timeframe_agreement = agreement_count / len(timeframes)
         logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)}")
 
-        if agreement_count < 2:  # 2 سے 1 تک کم کیا
+        if timeframe_agreement < 0.5:  # Changed to 2/4 (0.5)
             logger.info(f"[{symbol}] Insufficient timeframe agreement ({agreement_count}/{len(timeframes)})")
             return None
 
+        # Additional accuracy conditions
         valid_timeframes = [t for t in signals if signals[t] is not None]
         selected_timeframe = '1h' if '1h' in valid_timeframes else valid_timeframes[0]
         final_signal = signals[selected_timeframe]
         if final_signal:
+            # Fetch latest data for accuracy checks
+            df = await fetch_realtime_data(symbol, selected_timeframe, limit=50)
+            if df is None:
+                logger.warning(f"[{symbol}] Failed to fetch data for accuracy check")
+                return None
+
+            latest = df.iloc[-1]
+            # Strict RSI check
+            if final_signal['direction'] == 'LONG' and latest['rsi'] >= 30:
+                logger.info(f"[{symbol}] Signal rejected: RSI {latest['rsi']:.2f} not oversold for LONG")
+                return None
+            if final_signal['direction'] == 'SHORT' and latest['rsi'] <= 70:
+                logger.info(f"[{symbol}] Signal rejected: RSI {latest['rsi']:.2f} not overbought for SHORT")
+                return None
+
+            # Strict MACD check
+            if final_signal['direction'] == 'LONG' and (latest['macd'] <= latest['macd_signal'] or latest['macd'] <= 0):
+                logger.info(f"[{symbol}] Signal rejected: MACD {latest['macd']:.4f} not bullish")
+                return None
+            if final_signal['direction'] == 'SHORT' and (latest['macd'] >= latest['macd_signal'] or latest['macd'] >= 0):
+                logger.info(f"[{symbol}] Signal rejected: MACD {latest['macd']:.4f} not bearish")
+                return None
+
+            # Strict volume confirmation
+            if latest['volume'] < 1.5 * latest['volume_sma_20']:
+                logger.info(f"[{symbol}] Signal rejected: Volume {latest['volume']:.2f} < 1.5x SMA")
+                return None
+
+            # Volume threshold check
+            if latest['quote_volume_24h'] < 500000:
+                logger.info(f"[{symbol}] Signal rejected: Quote volume ${latest['quote_volume_24h']:,.2f} < $500,000")
+                return None
+
             final_signal['agreement'] = timeframe_agreement * 100
             logger.info(f"[{symbol}] Selected signal from {selected_timeframe} with agreement {final_signal['agreement']:.2f}%")
         return final_signal
