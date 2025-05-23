@@ -19,7 +19,6 @@ class SignalPredictor:
 
     def get_trade_duration(self, timeframe: str) -> str:
         durations = {
-            '5m': 'Up to 1 hour',
             '15m': 'Up to 1 hour',
             '1h': 'Up to 6 hours',
             '4h': 'Up to 24 hours',
@@ -35,6 +34,7 @@ class SignalPredictor:
                 return 60.0, 40.0, 20.0
 
             df = pd.read_csv(file_path)
+            logger.info(f"[{symbol}] CSV columns: {df.columns.tolist()}")
             if 'symbol' not in df.columns:
                 logger.error(f"[{symbol}] 'symbol' column missing in signals_log_new.csv")
                 return 60.0, 40.0, 20.0
@@ -52,9 +52,10 @@ class SignalPredictor:
                 logger.warning(f"[{symbol}] No recent signals for {direction}")
                 return 60.0, 40.0, 20.0
 
-            tp1_hits = len(df[df['tp1_hit'] == True]) if 'tp1_hit' in df else 0
-            tp2_hits = len(df[df['tp2_hit'] == True]) if 'tp2_hit' in df else 0
-            tp3_hits = len(df[df['tp3_hit'] == True]) if 'tp3_hit' in df else 0
+            # Handle missing TP hit columns
+            tp1_hits = len(df[df['tp1_hit'] == True]) if 'tp1_hit' in df.columns else 0
+            tp2_hits = len(df[df['tp2_hit'] == True]) if 'tp2_hit' in df.columns else 0
+            tp3_hits = len(df[df['tp3_hit'] == True]) if 'tp3_hit' in df.columns else 0
             total_signals = len(df)
 
             tp1_possibility = (tp1_hits / total_signals * 100) if total_signals > 0 else 60.0
@@ -149,6 +150,10 @@ class SignalPredictor:
             current_price = latest['close']
             support = sr_levels['support']
             resistance = sr_levels['resistance']
+            min_sr_gap = current_price * 0.01  # Ensure 1% gap
+            if abs(resistance - support) < min_sr_gap:
+                support -= min_sr_gap / 2
+                resistance += min_sr_gap / 2
             if abs(current_price - support) / current_price < 0.05:
                 conditions.append("Near Support")
             if abs(current_price - resistance) / current_price < 0.05:
@@ -230,13 +235,11 @@ class SignalPredictor:
                 tp3 = round(entry - max(0.02 * entry, 2.5 * atr), 2)
                 sl = round(entry + max(0.008 * entry, 1.0 * atr), 2)
 
-            # Ensure TP1 is within 1-2% range
             tp1_percent = abs(tp1 - entry) / entry * 100
             if not (1.0 <= tp1_percent <= 2.0):
                 logger.warning(f"[{symbol}] TP1 out of 1-2% range ({tp1_percent:.2f}%), adjusting")
                 tp1 = round(entry + 0.015 * entry if direction == "LONG" else entry - 0.015 * entry, 2)
 
-            # Calculate TP hit possibilities
             tp1_possibility, tp2_possibility, tp3_possibility = self.calculate_tp_hit_possibilities(symbol, direction, entry, tp1, tp2, tp3)
 
             trade_type = classify_trade(confidence) or "Scalping"
