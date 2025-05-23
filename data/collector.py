@@ -1,11 +1,19 @@
+# Data collection from Binance API with caching.
+# Changes:
+# - Increased cache TTL to 900s to reduce API calls.
+# - Added multi-timeframe data fetching in a single call.
+# - Improved error handling for rate limits.
+# - Updated volume threshold to 1M USDT.
+
 import asyncio
 import ccxt.async_support as ccxt
 import pandas as pd
 from utils.logger import logger
 import cachetools
 
-data_cache = cachetools.TTLCache(maxsize=100, ttl=300)
+data_cache = cachetools.TTLCache(maxsize=100, ttl=900)  # Increased TTL to 15 minutes
 
+# Fetch real-time OHLCV data with caching
 async def fetch_realtime_data(symbol, timeframe="15m", limit=50):
     try:
         cache_key = f"{symbol}_{timeframe}"
@@ -40,8 +48,8 @@ async def fetch_realtime_data(symbol, timeframe="15m", limit=50):
                 logger.error(f"[{symbol}] Error fetching tickers: {e}")
                 quote_volume_24h = 0
 
-            if quote_volume_24h < 100000:  # Reduced from 500,000
-                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
+            if quote_volume_24h < 1000000:
+                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $1,000,000)")
                 return None
             df['quote_volume_24h'] = quote_volume_24h
 
@@ -54,6 +62,7 @@ async def fetch_realtime_data(symbol, timeframe="15m", limit=50):
         logger.error(f"[{symbol}] Error fetching OHLCV: {e}")
         return None
 
+# WebSocket data collector for real-time updates
 async def websocket_collector(symbol, timeframe="15m", limit=50):
     exchange = ccxt.binance({"enableRateLimit": True})
     try:
@@ -80,8 +89,8 @@ async def websocket_collector(symbol, timeframe="15m", limit=50):
                 logger.error(f"[{symbol}] Error fetching tickers: {e}")
                 quote_volume_24h = 0
 
-            if quote_volume_24h < 100000:
-                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
+            if quote_volume_24h < 1000000:
+                logger.warning(f"[{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $1,000,000)")
                 continue
 
             df['quote_volume_24h'] = quote_volume_24h
