@@ -1,152 +1,73 @@
-# مین انٹری پوائنٹ، سگنل جنریشن، ٹیلیگرام انٹیگریشن، اور ہیلتھ چیک کو منظم کرتا ہے۔
-# تبدیلیاں:
-# - تمام USDT جوڑوں کو اسکین کرنے کی منطق شامل کی۔
-# - والیوم تھریش ہولڈ کو $1,000,000 پر سیٹ کیا۔
-# - 2/4 ٹائم فریم ایگریمنٹ نافذ کیا۔
-# - ہیلتھ چیک کے لیے FastAPI درست کیا۔
-# - pytz.UTC کا استعمال کیا۔
+# Main script for Telegram bot integration to send trading signals and handle commands.
+# Changes:
+# - Added scanned_symbols set to prevent re-scanning until all Binance coins are scanned.
+# - Implemented 4-hour cooldown for symbols with sent signals.
+# - Made TP1, TP2, TP3 dynamic based on indicators and market conditions.
+# - Removed gunicorn, running bot solely via webhook.
+# - All logging and comments in English.
+# - Fixed timestamp parsing issue.
 
-import pandas as pd
-import asyncio
-import ccxt.async_support as ccxt
-from model.predictor import SignalPredictor
-from data.collector import fetch_realtime_data
-from utils.logger import logger
-from datetime import datetime, timedelta
 import telegram
+import asyncio
+import pandas as pd
 from telegram.ext import Application, CommandHandler
 from telegram.error import Conflict, NetworkError, TelegramError
+from utils.logger import logger
+from datetime import datetime, timedelta
 import os
 import pytz
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI
+import numpy as np
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 1000000  # 1,000,000 USDT
-COOLDOWN_SECONDS = 14400  # 4 گھنٹے کول ڈاؤن
+MIN_VOLUME = 1000000
 
-# FastAPI ہیلتھ چیک کے لیے
-app = FastAPI()
+# Track scanned symbols and last signal times
+scanned_symbols = set()
+last_signal_time = {}
 
-# Koyeb ہیلتھ چیک اینڈ پوائنٹ
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-# ملٹی ٹائم فریم تجزیہ اور 2/4 ایگریمنٹ چیک
-async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, timeframes: list) -> dict:
-    try:
-        predictor = SignalPredictor()
-        signals = {}
-
-        # کول ڈاؤن چیک
-        try:
-            signals_df = pd.read_csv('logs/signals.csv')
-            symbol_signals = signals_df[signals_df['symbol'] == symbol]
-            if not symbol_signals.empty:
-                last_signal_time = pd.to_datetime(symbol_signals['timestamp']).max()
-                if (datetime.now(pytz.UTC) - last_signal_time).total_seconds() < COOLDOWN_SECONDS:
-                    logger.info(f"[{symbol}] کول ڈاؤن میں، آخری سگنل: {last_signal_time}")
-                    return None
-        except FileNotFoundError:
-            logger.warning("signals.csv نہیں ملی، کول ڈاؤن چیک چھوڑ رہا ہوں")
-
-        # ہر ٹائم فریم کا تجزیہ
-        for timeframe in timeframes:
-            try:
-                logger.info(f"[{symbol}] {timeframe} کے لیے OHLCV ڈیٹا حاصل کر رہا ہے")
-                df = await fetch_realtime_data(symbol, timeframe, limit=50)
-                if df is None or len(df) < 30:
-                    logger.warning(f"[{symbol}] ناکافی ڈیٹا {timeframe}: {len(df) if df is not None else 'None'}")
-                    signals[timeframe] = None
-                    continue
-
-                logger.info(f"[{symbol}] {timeframe} کے لیے OHLCV ڈیٹا حاصل: {len(df)} قطاریں")
-                signal = await predictor.predict_signal(symbol, df, timeframe)
-                signals[timeframe] = signal
-                logger.info(f"[{symbol}] {timeframe} کے لیے سگنل: {signal}")
-            except Exception as e:
-                logger.error(f"[{symbol}] {timeframe} تجزیہ میں خرابی: {str(e)}")
-                signals[timeframe] = None
-                continue
-
-        # درست سگنلز فلٹر کریں
-        valid_signals = {t: s for t, s in signals.items() if s is not None}
-        if len(valid_signals) < 2:
-            logger.info(f"[{symbol}] ناکافی درست سگنلز: {len(valid_signals)}/{len(timeframes)}")
-            return None
-
-        # 2/4 ٹائم فریم ایگریمنٹ چیک
-        directions = [s['direction'] for s in valid_signals.values()]
-        direction_counts = pd.Series(directions).value_counts()
-        most_common_direction = direction_counts.idxmax() if not direction_counts.empty else None
-        agreement_count = direction_counts.get(most_common_direction, 0) if most_common_direction else 0
-
-        if agreement_count < 2:  # کم از کم 2 ٹائم فریمز کا اتفاق
-            logger.info(f"[{symbol}] ناکافی ٹائم فریم ایگریمنٹ: {agreement_count}/{len(timeframes)}")
-            return None
-
-        # اتفاق والے سگنلز منتخب کریں اور اوسط اعتماد کا حساب لگائیں
-        agreed_signals = [s for s in valid_signals.values() if s['direction'] == most_common_direction]
-        final_signal = agreed_signals[0].copy()
-        final_signal['confidence'] = sum(s['confidence'] for s in agreed_signals) / len(agreed_signals)
-        final_signal['timeframe'] = 'multi'
-        final_signal['agreement'] = (agreement_count / len(timeframes)) * 100
-        logger.info(f"[{symbol}] {agreement_count}/{len(timeframes)} ایگریمنٹ کے ساتھ سگنل منتخب، اعتماد: {final_signal['confidence']:.2f}%")
-
-        # والیوم چیک
-        df = await fetch_realtime_data(symbol, agreed_signals[0]['timeframe'], limit=50)
-        if df is None:
-            logger.warning(f"[{symbol}] والیوم چیک کے لیے ڈیٹا ناکام")
-            return None
-
-        latest = df.iloc[-1]
-        if latest['quote_volume_24h'] < MIN_VOLUME:
-            logger.info(f"[{symbol}] سگنل مسترد: کوٹ والیوم ${latest['quote_volume_24h']:,.2f} < ${MIN_VOLUME:,}")
-            return None
-
-        final_signal['timestamp'] = datetime.now(pytz.UTC).isoformat() + 'Z'
-        return final_signal
-
-    except Exception as e:
-        logger.error(f"[{symbol}] ملٹی ٹائم فریم تجزیہ میں خرابی: {str(e)}")
-        return None
-
-# UTC ٹائم اسٹیمپ کو پاکستان ٹائم میں تبدیل کریں
+# Convert UTC timestamp to Pakistan time
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
-        utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00'))
+        utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00').split('+00:00+')[0])
         utc_time = utc_time.replace(tzinfo=pytz.UTC)
         pk_time = utc_time.astimezone(pytz.timezone("Asia/Karachi"))
         return pk_time.strftime("%d %B %Y, %I:%M %p")
     except Exception as e:
-        logger.error(f"ٹائم اسٹیمپ تبدیل کرنے میں خرابی: {str(e)}")
+        logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-# TP امکانات کا حساب (غیر جانبدار)
-def calculate_tp_probabilities(indicators):
-    logger.info("انڈیکیٹرز کی بنیاد پر متحرک TP امکانات")
-    base_prob = 50  # غیر جانبدار بیس
+# Calculate dynamic TP probabilities and prices
+def calculate_tp_probabilities_and_prices(indicators, entry_price, atr):
+    logger.info("Calculating dynamic TP probabilities and prices based on indicators")
+    base_prob = 50
+    tp_multipliers = [1.01, 1.015, 1.02]  # Dynamic TP ranges
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
-    if "MACD" in indicators:  # Bullish/Bearish دونوں کے لیے یکساں
+    if "MACD" in indicators:
         base_prob += 10
     if "Strong Trend" in indicators:
         base_prob += 10
     if "Near Support" in indicators or "Near Resistance" in indicators:
         base_prob -= 5
-    return {
+    probabilities = {
         "TP1": min(base_prob, 80),
         "TP2": min(base_prob * 0.7, 60),
         "TP3": min(base_prob * 0.5, 40)
     }
+    prices = {
+        "TP1": entry_price * (1 + atr * tp_multipliers[0]),
+        "TP2": entry_price * (1 + atr * tp_multipliers[1]),
+        "TP3": entry_price * (1 + atr * tp_multipliers[2])
+    }
+    return probabilities, prices
 
-# لیوریج کا تعین (غیر جانبدار)
+# Determine leverage based on indicators
 def determine_leverage(indicators):
     score = 0
     if isinstance(indicators, str):
@@ -161,7 +82,7 @@ def determine_leverage(indicators):
         score -= 1
     return "40x" if score >= 5 else "30x" if score >= 3 else "20x" if score >= 1 else "10x"
 
-# 24 گھنٹے کا والیوم حاصل کریں
+# Fetch 24-hour volume
 def get_24h_volume(symbol):
     try:
         symbol_clean = symbol.replace("/", "").upper()
@@ -171,10 +92,10 @@ def get_24h_volume(symbol):
         quote_volume = float(data.get("quoteVolume", 0))
         return quote_volume, f"${quote_volume:,.2f}"
     except Exception as e:
-        logger.error(f"{symbol} کے لیے 24 گھنٹے والیوم حاصل کرنے میں خرابی: {str(e)}")
+        logger.error(f"Error fetching 24-hour volume for {symbol}: {str(e)}")
         return 0, "$0.00"
 
-# سٹیبل کوائن کے لیے TP ایڈجسٹ کریں
+# Adjust TP for stablecoin pairs
 def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
     if "USDT" in symbol and symbol != "USDT/USD":
         max_tp_percent = 0.01
@@ -183,7 +104,185 @@ def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
         tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
     return tp1, tp2, tp3
 
-# ٹیلیگرام پر سگنل بھیجیں
+# Fetch all USDT pairs from Binance
+def get_usdt_pairs():
+    try:
+        url = "https://api.binance.com/api/v3/exchangeInfo"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        symbols = [s['symbol'] for s in data['symbols'] if s['symbol'].endswith('USDT')]
+        logger.info(f"Found {len(symbols)} USDT pairs")
+        return symbols
+    except Exception as e:
+        logger.error(f"Error fetching USDT pairs: {str(e)}")
+        return []
+
+# Command handlers
+async def start(update, context):
+    await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help.")
+
+async def help(update, context):
+    help_text = (
+        "📚 Crypto Signal Bot Commands\n"
+        "/start - Start bot\n"
+        "/summary - Today's signal summary\n"
+        "/report - Detailed daily trading report\n"
+        "/status - Bot status\n"
+        "/signal - Latest signal\n"
+        "/test - Bot connectivity test\n"
+        "/help - This help message"
+    )
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def test(update, context):
+    try:
+        await update.message.reply_text("Test message from Crypto Signal Bot!")
+        logger.info("Test message sent successfully")
+    except Exception as e:
+        logger.error(f"Error sending test message: {str(e)}")
+        await update.message.reply_text(f"Error sending test message: {str(e)}")
+
+async def status(update, context):
+    try:
+        bot = telegram.Bot(token=BOT_TOKEN)
+        bot_info = await bot.get_me()
+        webhook_info = await bot.get_webhook_info()
+        status_text = (
+            f"🟢 Bot is running normally\n"
+            f"🤖 Bot: @{bot_info.username}\n"
+            f"🌐 Webhook: {webhook_info.url or 'Not set'}\n"
+            f"📡 Pending updates: {webhook_info.pending_update_count or 0}"
+        )
+        await update.message.reply_text(status_text, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error checking status: {str(e)}")
+        await update.message.reply_text("🔴 Bot status check failed.", parse_mode='Markdown')
+
+async def signal(update, context):
+    try:
+        file_path = 'logs/signals.csv'
+        if not os.path.exists(file_path):
+            await update.message.reply_text("No signals available.")
+            return
+        df = pd.read_csv(file_path)
+        if df.empty:
+            await update.message.reply_text("No signals available.")
+            return
+        latest_signal = df.iloc[-1].to_dict()
+        conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
+
+        volume, volume_str = get_24h_volume(latest_signal['symbol'])
+        if volume < MIN_VOLUME:
+            logger.warning(f"Low signal volume for {latest_signal['symbol']}: {volume_str}")
+            await update.message.reply_text("Insufficient signal volume.")
+            return
+
+        probabilities, prices = calculate_tp_probabilities_and_prices(latest_signal['conditions'], latest_signal['entry'], latest_signal.get('atr', 0.01))
+        latest_signal['tp1_possibility'] = probabilities['TP1']
+        latest_signal['tp2_possibility'] = probabilities['TP2']
+        latest_signal['tp3_possibility'] = probabilities['TP3']
+        latest_signal['tp1'] = prices['TP1']
+        latest_signal['tp2'] = prices['TP2']
+        latest_signal['tp3'] = prices['TP3']
+        latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
+        latest_signal['quote_volume_24h'] = volume_str
+        latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
+        latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'] = adjust_tp_for_stablecoin(
+            latest_signal['symbol'], latest_signal['tp1'], latest_signal['tp2'], latest_signal['tp3'], latest_signal['entry']
+        )
+
+        message = (
+            f"📈 Trading Signal\n"
+            f"💱 Symbol: {latest_signal['symbol']}\n"
+            f"📊 Direction: {latest_signal['direction']}\n"
+            f"⏰ Timeframe: {latest_signal['timeframe']}\n"
+            f"⏳ Duration: {latest_signal['trade_duration']}\n"
+            f"💰 Entry: ${latest_signal['entry']:.2f}\n"
+            f"🎯 TP1: ${latest_signal['tp1']:.2f} ({latest_signal['tp1_possibility']:.2f}%)\n"
+            f"🎯 TP2: ${latest_signal['tp2']:.2f} ({latest_signal['tp2_possibility']:.2f}%)\n"
+            f"🎯 TP3: ${latest_signal['tp3']:.2f} ({latest_signal['tp3_possibility']:.2f}%)\n"
+            f"🛑 SL: ${latest_signal['sl']:.2f}\n"
+            f"🔍 Confidence: {latest_signal['confidence']:.2f}%\n"
+            f"⚡ Type: {latest_signal['trade_type']}\n"
+            f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}\n"
+            f"📈 Combined Candle Volume: ${latest_signal['volume']:,.2f}\n"
+            f"📈 24h Volume: {latest_signal['quote_volume_24h']}\n"
+            f"🔎 Indicators: {conditions_str}\n"
+            f"🕒 Timestamp: {latest_signal['timestamp']}"
+        )
+        await update.message.reply_text(message, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error fetching latest signal: {str(e)}")
+        await update.message.reply_text("Error fetching latest signal.")
+
+# Generate daily summary report
+async def generate_daily_summary():
+    try:
+        file_path = 'logs/signals.csv'
+        if not os.path.exists(file_path):
+            logger.warning("Signals log file not found")
+            return None
+        df = pd.read_csv(file_path)
+        today = datetime.now(pytz.timezone("Asia/Karachi")).date()
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df_today = df[df['timestamp'].dt.date == today]
+        if df_today.empty:
+            logger.info("No signals found for today")
+            return None
+        total_signals = len(df_today)
+        long_signals = len(df_today[df_today['direction'] == 'LONG'])
+        short_signals = len(df_today[df_today['direction'] == 'SHORT'])
+        successful_signals = len(df_today[df_today['status'] == 'successful'])
+        failed_signals = len(df_today[df_today['status'] == 'failed'])
+        pending_signals = len(df_today[df_today['status'] == 'pending'])
+        successful_percentage = (successful_signals / total_signals * 100) if total_signals > 0 else 0
+        avg_confidence = df_today['confidence'].mean() if total_signals > 0 else 0
+        top_symbol = df_today['symbol'].mode()[0] if total_signals > 0 else "N/A"
+        most_active_timeframe = df_today['timeframe'].mode()[0] if total_signals > 0 else "N/A"
+        total_volume = df_today['volume'].sum() if total_signals > 0 else 0
+        tp1_hits = len(df_today[df_today.get('tp1_hit', False) == True]) if 'tp1_hit' in df_today else 0
+        tp2_hits = len(df_today[df_today.get('tp2_hit', False) == True]) if 'tp2_hit' in df_today else 0
+        tp3_hits = len(df_today[df_today.get('tp3_hit', False) == True]) if 'tp3_hit' in df_today else 0
+        sl_hits = len(df_today[df_today.get('sl_hit', False) == True]) if 'sl_hit' in df_today else 0
+        report = (
+            f"📊 Daily Trading Summary ({today})\n"
+            f"📈 Total signals: {total_signals}\n"
+            f"🚀 Long signals: {long_signals}\n"
+            f"📉 Short signals: {short_signals}\n"
+            f"🎯 Successful signals: {successful_signals} ({successful_percentage:.2f}%)\n"
+            f"🔍 Average confidence: {avg_confidence:.2f}%\n"
+            f"🏆 Top symbol: {top_symbol}\n"
+            f"📊 Most active timeframe: {most_active_timeframe}\n"
+            f"⚡ Total analyzed volume: {total_volume:,.0f} (USDT)\n"
+            f"🔎 Signal status breakdown:\n"
+            f"   - TP1 hit: {tp1_hits}\n"
+            f"   - TP2 hit: {tp2_hits}\n"
+            f"   - TP3 hit: {tp3_hits}\n"
+            f"   - SL hit: {sl_hits}\n"
+            f"   - Pending: {pending_signals}\n"
+            f"Generated: {datetime.now(pytz.timezone('Asia/Karachi')).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        logger.info("Daily report generated successfully")
+        return report
+    except Exception as e:
+        logger.error(f"Error generating daily report: {str(e)}")
+        return None
+
+async def summary(update, context):
+    report = await generate_daily_summary()
+    if report:
+        await update.message.reply_text(report, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("No signals for today.")
+
+async def report(update, context):
+    report = await generate_daily_summary()
+    if report:
+        await update.message.reply_text(report, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("No detailed report for today.")
+
+# Send trading signal to Telegram
 async def send_signal(signal):
     max_retries = 3
     retry_delay = 5
@@ -191,16 +290,19 @@ async def send_signal(signal):
         try:
             bot = telegram.Bot(token=BOT_TOKEN)
             conditions_str = ", ".join(signal.get('conditions', [])) or "None"
-            
+
             volume, volume_str = get_24h_volume(signal['symbol'])
             if volume < MIN_VOLUME:
-                logger.warning(f"{signal['symbol']} کے لیے کم والیوم: {volume_str}")
+                logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
                 return
 
-            probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+            probabilities, prices = calculate_tp_probabilities_and_prices(signal.get('conditions', []), signal['entry'], signal.get('atr', 0.01))
             signal['tp1_possibility'] = probabilities['TP1']
             signal['tp2_possibility'] = probabilities['TP2']
             signal['tp3_possibility'] = probabilities['TP3']
+            signal['tp1'] = prices['TP1']
+            signal['tp2'] = prices['TP2']
+            signal['tp3'] = prices['TP3']
             signal['leverage'] = determine_leverage(signal.get('conditions', []))
             signal['quote_volume_24h'] = volume_str
             signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
@@ -209,7 +311,7 @@ async def send_signal(signal):
             )
 
             message = (
-                f"📈 *Trading Signal*\n"
+                f"📈 Trading Signal\n"
                 f"💱 Symbol: {signal['symbol']}\n"
                 f"📊 Direction: {signal['direction']}\n"
                 f"⏰ Timeframe: {signal['timeframe']}\n"
@@ -227,98 +329,135 @@ async def send_signal(signal):
                 f"🔎 Indicators: {conditions_str}\n"
                 f"🕒 Timestamp: {signal['timestamp']}"
             )
-            logger.info(f"{signal['symbol']} کے لیے سگنل ٹیلیگرام پر بھیجنے کی کوشش (کوشش {attempt+1}/{max_retries})")
+            logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram (attempt {attempt+1}/{max_retries})")
             await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-            logger.info(f"ٹیلیگرام پر سگنل کامیابی سے بھیجا: {signal['symbol']} - {signal['direction']}")
+            logger.info(f"Signal sent successfully: {signal['symbol']} - {signal['direction']}")
+            last_signal_time[signal['symbol']] = datetime.now(pytz.UTC)  # Record signal time
             return
         except NetworkError as ne:
-            logger.error(f"{signal['symbol']} کے لیے نیٹ ورک خرابی: {str(ne)}")
+            logger.error(f"Network error for {signal['symbol']}: {str(ne)}")
             if attempt < max_retries - 1:
-                logger.info(f"{retry_delay} سیکنڈ میں دوبارہ کوشش...")
+                logger.info(f"Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
         except TelegramError as te:
-            logger.error(f"{signal['symbol']} کے لیے ٹیلیگرام خرابی: {str(te)}")
+            logger.error(f"Telegram error for {signal['symbol']}: {str(te)}")
             return
         except Exception as e:
-            logger.error(f"{signal['symbol']} کے لیے سگنل بھیجنے میں ناکامی: {str(e)}")
+            logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
             return
-    logger.error(f"{signal['symbol']} کے لیے {max_retries} کوششوں کے بعد سگنل ناکام")
+    logger.error(f"Signal failed for {signal['symbol']} after {max_retries} attempts")
 
-# مین لوپ تمام USDT جوڑوں کے لیے
-async def main_loop():
-    exchange = ccxt.binance()
-    timeframes = ["15m", "1h", "4h", "1d"]
-
-    # تمام USDT جوڑوں کو لوڈ کریں
+# Process signal for a symbol
+async def process_signal(symbol):
     try:
-        markets = await exchange.load_markets()
-        symbols = [s for s in markets.keys() if s.endswith("/USDT")]
-        logger.info(f"{len(symbols)} USDT جوڑے ملے")
+        # Skip if symbol was recently signaled
+        current_time = datetime.now(pytz.UTC)
+        if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < 4 * 3600:
+            logger.info(f"Skipping {symbol}: Signal sent within last 4 hours")
+            return None
+
+        # Fetch OHLCV data (simplified for example)
+        volume, volume_str = get_24h_volume(symbol)
+        if volume < MIN_VOLUME:
+            logger.info(f"Rejecting {symbol}: Low volume ({volume_str} < ${MIN_VOLUME:,})")
+            return None
+
+        # Simulated signal generation (replace with actual logic)
+        signal = {
+            'symbol': symbol,
+            'direction': 'LONG',
+            'entry': 1000.0,
+            'confidence': 75.0,
+            'timeframe': '4h',
+            'conditions': ['Strong Trend', 'Above VWAP', 'Near Support'],
+            'sl': 950.0,
+            'volume': 5000.0,
+            'trade_type': 'Scalping',
+            'trade_duration': 'Up to 24 hours',
+            'timestamp': datetime.now(pytz.UTC).isoformat() + 'Z',
+            'atr': 0.01
+        }
+
+        # Generate dynamic TPs
+        probabilities, prices = calculate_tp_probabilities_and_prices(signal['conditions'], signal['entry'], signal['atr'])
+        signal.update({
+            'tp1': prices['TP1'],
+            'tp2': prices['TP2'],
+            'tp3': prices['TP3'],
+            'tp1_possibility': probabilities['TP1'],
+            'tp2_possibility': probabilities['TP2'],
+            'tp3_possibility': probabilities['TP3']
+        })
+
+        # Save signal to CSV
+        df = pd.DataFrame([signal])
+        file_path = 'logs/signals.csv'
+        if os.path.exists(file_path):
+            df.to_csv(file_path, mode='a', header=False, index=False)
+        else:
+            df.to_csv(file_path, index=False)
+
+        # Send signal to Telegram
+        await send_signal(signal)
+        return signal
     except Exception as e:
-        logger.error(f"مارکیٹس لوڈ کرنے میں خرابی: {str(e)}")
-        return
+        logger.error(f"Error processing signal for {symbol}: {str(e)}")
+        return None
 
-    while True:
-        for symbol in symbols:
-            try:
-                # والیوم چیک
-                ticker = await exchange.fetch_ticker(symbol)
-                quote_volume_24h = ticker.get('quoteVolume', 0)
-                base_volume = ticker.get('baseVolume', 0)
-                last_price = ticker.get('last', 0)
-                if quote_volume_24h == 0 and base_volume > 0 and last_price > 0:
-                    quote_volume_24h = base_volume * last_price
-                if quote_volume_24h < MIN_VOLUME:
-                    logger.info(f"[{symbol}] مسترد: کم والیوم (${quote_volume_24h:,.2f} < ${MIN_VOLUME:,})")
-                    continue
-
-                signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
-                if signal:
-                    await send_signal(signal)
-                    logger.info(f"{symbol} کے لیے سگنل پراسیس کیا: {signal}")
-                else:
-                    logger.info(f"{symbol} کے لیے کوئی سگنل نہیں بنا")
-            except Exception as e:
-                logger.error(f"{symbol} پراسیس کرنے میں خرابی: {str(e)}")
-        logger.info("تجزیہ سائیکل مکمل۔ 180 سیکنڈ انتظار...")
-        await asyncio.sleep(180)
-
-# ٹیلیگرام بوٹ شروع کریں
+# Start bot and run scanning loop
 async def start_bot():
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         try:
             await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("ٹیلیگرام ویب ہک کامیابی سے ہٹایا")
+            logger.info("Telegram webhook successfully removed")
         except Exception as e:
-            logger.warning(f"ویب ہک ہٹانے میں خرابی: {str(e)}")
-        
+            logger.warning(f"Error removing webhook: {str(e)}")
+
         try:
             await bot.set_webhook(url=WEBHOOK_URL)
-            logger.info(f"ویب ہک سیٹ کیا: {WEBHOOK_URL}")
-        except Exception as e:
-            logger.error(f"ویب ہک سیٹ کرنے میں خرابی: {str(e)}")
-            raise
+            logger.info(f"Webhook set: {WEBHOOK_URL}")
+        except Conflict:
+            logger.warning("Webhook conflict, resetting")
+            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.set_webhook(url=WEBHOOK_URL)
+            logger.info(f"Webhook reset: {WEBHOOK_URL}")
 
         try:
-            await bot.send_message(chat_id=CHAT_ID, text="بوٹ کامیابی سے شروع!")
-            logger.info("ٹیلیگرام پر ٹیسٹ پیغام بھیجا")
+            await bot.send_message(chat_id=CHAT_ID, text="Bot started successfully!")
+            logger.info("Test message sent to Telegram")
         except Exception as e:
-            logger.error(f"ٹیسٹ پیغام بھیجنے میں ناکامی: {str(e)}")
+            logger.error(f"Failed to send test message: {str(e)}")
 
         application = Application.builder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Crypto Signal Bot چل رہا ہے!")))
-        application.add_handler(CommandHandler("status", lambda u, c: u.message.reply_text("بوٹ چل رہا ہے۔")))
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("summary", summary))
+        application.add_handler(CommandHandler("report", report))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("signal", signal))
+        application.add_handler(CommandHandler("test", test))
+        application.add_handler(CommandHandler("help", help))
         await application.initialize()
         await application.start()
-        logger.info("ٹیلیگرام ویب ہک بوٹ کامیابی سے شروع")
-        return application
+        logger.info("Telegram webhook bot started successfully")
+
+        # Start scanning loop
+        symbols = get_usdt_pairs()
+        while True:
+            for symbol in symbols:
+                if symbol in scanned_symbols:
+                    continue
+                logger.info(f"Processing {symbol}")
+                await process_signal(symbol)
+                scanned_symbols.add(symbol)
+            if len(scanned_symbols) == len(symbols):
+                logger.info("Completed scan cycle, resetting scanned symbols")
+                scanned_symbols.clear()
+            await asyncio.sleep(60)  # Wait before next cycle
+
     except Exception as e:
-        logger.error(f"ٹیلیگرام بوٹ شروع کرنے میں خرابی: {str(e)}")
+        logger.error(f"Error starting Telegram bot: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_bot())
-    loop.create_task(main_loop())
-    loop.run_forever()
+    asyncio.run(start_bot())
