@@ -31,8 +31,8 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000  # Reduced from 500,000
-MIN_CONFIDENCE = 60  # Reduced from 65
+MIN_QUOTE_VOLUME = 100000
+MIN_CONFIDENCE = 60
 COOLDOWN_HOURS = 6
 
 cooldowns = {}
@@ -46,7 +46,7 @@ def save_signal_to_csv(signal):
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
             'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
             'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement',
-            'tp1_hit', 'tp2_hit', 'tp3_hit'  # Added TP hit columns
+            'tp1_hit', 'tp2_hit', 'tp3_hit'
         ]
         signal_dict = {col: signal.get(col, None) for col in required_columns}
         signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
@@ -101,27 +101,21 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 25:  # Reduced from 50%
-                logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 25%")
-                return
-
-            # Volume check
-            ticker = await exchange.fetch_ticker(symbol)
-            quote_volume = ticker.get('quoteVolume', 0)
-            if quote_volume < MIN_QUOTE_VOLUME:
-                logger.info(f"[{symbol}] Signal rejected: Quote volume ${quote_volume:,.2f} < ${MIN_QUOTE_VOLUME}")
+            if agreement < 10:  # Reduced from 25%
+                logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 10%")
                 return
 
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
-            signal['quote_volume_24h'] = quote_volume
-            logger.info(f"[{symbol}] Sending signal to Telegram")
-            await send_signal(signal)
+            ticker = await exchange.fetch_ticker(symbol)
+            signal['quote_volume_24h'] = ticker.get('quoteVolume', 0)
+            logger.info(f"[{symbol}] Sending signal to Telegram: {signal['direction']}, Confidence: {signal['confidence']}%")
+            await send_signal(signal)  # Direct send without extra checks
             save_signal_to_csv(signal)
             update_cooldown(symbol)
-            logger.info(f"✅ Signal generated for {signal['symbol']} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
+            logger.info(f"✅ Signal generated and sent for {signal['symbol']} ({signal['timeframe']}): {signal['direction']} (Confidence: {signal['confidence']:.2f}%, Agreement: {agreement}%)")
         else:
             logger.info(f"[{symbol}] No signal or confidence below threshold ({signal.get('confidence',0) if signal else 'N/A'}%)")
     except Exception as e:
