@@ -31,8 +31,8 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 500000  # 500,000 USD
-MIN_CONFIDENCE = 60  # Lowered from 65 to allow more signals
+MIN_QUOTE_VOLUME = 100000  # Reduced from 500,000
+MIN_CONFIDENCE = 60  # Reduced from 65
 COOLDOWN_HOURS = 6
 
 cooldowns = {}
@@ -45,10 +45,14 @@ def save_signal_to_csv(signal):
             'symbol', 'direction', 'entry', 'confidence', 'timeframe', 'conditions',
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
             'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
-            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement'
+            'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement',
+            'tp1_hit', 'tp2_hit', 'tp3_hit'  # Added TP hit columns
         ]
         signal_dict = {col: signal.get(col, None) for col in required_columns}
         signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
+        signal_dict['tp1_hit'] = False
+        signal_dict['tp2_hit'] = False
+        signal_dict['tp3_hit'] = False
         df = pd.DataFrame([signal_dict])
         df.to_csv(file_path, mode='a', index=False, header=not os.path.exists(file_path))
         logger.info(f"Signal saved to CSV: {signal['symbol']} at {signal['timestamp']}")
@@ -97,24 +101,22 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 25:  # Relaxed to 1/4 agreement (25%)
+            if agreement < 25:  # Reduced from 50%
                 logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 25%")
                 return
 
-            # Volume and price checks
-            df = await exchange.fetch_ohlcv(symbol, signal['timeframe'], limit=50)
-            df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            latest = df.iloc[-1]
+            # Volume check
             ticker = await exchange.fetch_ticker(symbol)
-            if ticker['quoteVolume'] < MIN_QUOTE_VOLUME:
-                logger.info(f"[{symbol}] Signal rejected: Quote volume ${ticker['quoteVolume']:,.2f} < ${MIN_QUOTE_VOLUME}")
+            quote_volume = ticker.get('quoteVolume', 0)
+            if quote_volume < MIN_QUOTE_VOLUME:
+                logger.info(f"[{symbol}] Signal rejected: Quote volume ${quote_volume:,.2f} < ${MIN_QUOTE_VOLUME}")
                 return
 
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
             signal['agreement'] = agreement
-            signal['quote_volume_24h'] = ticker['quoteVolume']
+            signal['quote_volume_24h'] = quote_volume
             logger.info(f"[{symbol}] Sending signal to Telegram")
             await send_signal(signal)
             save_signal_to_csv(signal)
@@ -135,11 +137,13 @@ async def get_high_volume_symbols(exchange, min_volume):
             try:
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume = float(ticker.get('quoteVolume', 0) or 0)
-                close_price = float(ticker.get('close', 0) or 0)
-                if quote_volume >= min_volume and 0.00001 < close_price < 100000:
+                base_volume = float(ticker.get('baseVolume', 0) or 0)
+                last_price = float(ticker.get('last', 0) or 0)
+                if quote_volume == 0 and base_volume > 0 and last_price > 0:
+                    quote_volume = base_volume * last_price
+                if quote_volume >= min_volume and 0.00001 < last_price < 100000:
                     return symbol, quote_volume
-                else:
-                    return None
+                return None
             except Exception as e:
                 logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
                 return None
@@ -166,7 +170,7 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['15m', '1h', '4h', '1d']
+        timeframes = ['15m','1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
