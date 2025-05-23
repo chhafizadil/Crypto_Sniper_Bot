@@ -1,3 +1,10 @@
+# Core engine for running signal generation and Telegram notifications.
+# Changes:
+# - Updated to use 2/3 timeframe agreement from analyze_symbol_multi_timeframe.
+# - Reduced symbol processing to avoid Koyeb resource limits.
+# - Added memory and CPU usage logging for optimization.
+# - Improved error handling to prevent crashes.
+
 import asyncio
 import ccxt.async_support as ccxt
 from core.analysis import analyze_symbol_multi_timeframe
@@ -6,13 +13,14 @@ import pandas as pd
 import psutil
 from telegram import Bot
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 logger.info("[Engine] File loaded: core/engine.py")
 
 load_dotenv()
 
+# Run the core engine for signal generation
 async def run_engine():
     logger.info("[Engine] Starting run_engine")
 
@@ -64,19 +72,19 @@ async def run_engine():
         logger.info("[Engine] Loading markets")
         try:
             markets = await exchange.load_markets()
-            symbols = [s for s in markets.keys() if s.endswith("/USDT")]
-            logger.info(f"[Engine] Found {len(symbols)} USDT pairs")
+            symbols = ["ETH/USDT", "BNB/USDT", "NEO/USDT", "IOTA/USDT"]  # Limited to high-volume pairs
+            logger.info(f"[Engine] Processing {len(symbols)} USDT pairs")
         except Exception as e:
             logger.error(f"[Engine] Error loading markets: {str(e)}")
             return
 
         last_signal_time = {}
-        for symbol in symbols[:10]:
+        for symbol in symbols:
             memory_before = psutil.Process().memory_info().rss / 1024 / 1024
             cpu_percent = psutil.cpu_percent(interval=0.1)
             logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
 
-            if symbol in last_signal_time and (datetime.now() - last_signal_time[symbol]).total_seconds() < 6 * 3600:
+            if symbol in last_signal_time and (datetime.now(timezone.utc) - last_signal_time[symbol]).total_seconds() < 14400:
                 logger.info(f"[Engine] [{symbol}] On cooldown")
                 continue
 
@@ -87,8 +95,8 @@ async def run_engine():
                 last_price = ticker.get('last', 0)
                 if quote_volume_24h == 0 and base_volume > 0 and last_price > 0:
                     quote_volume_24h = base_volume * last_price
-                if quote_volume_24h < 100000:
-                    logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
+                if quote_volume_24h < 1000000:
+                    logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $1,000,000)")
                     continue
             except Exception as e:
                 logger.error(f"[Engine] [{symbol}] Error fetching ticker: {str(e)}")
@@ -114,7 +122,7 @@ async def run_engine():
                     try:
                         await bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=message)
                         logger.info(f"[Engine] [{symbol}] Signal sent: {signal['direction']}, Confidence: {signal['confidence']:.2f}%")
-                        last_signal_time[symbol] = datetime.now()
+                        last_signal_time[symbol] = datetime.now(timezone.utc)
                     except Exception as e:
                         logger.error(f"[Engine] [{symbol}] Error sending Telegram message: {str(e)}")
 
