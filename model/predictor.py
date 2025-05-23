@@ -10,7 +10,6 @@ from utils.fibonacci import calculate_fibonacci_levels
 from utils.support_resistance import calculate_support_resistance
 from core.trade_classifier import classify_trade
 from utils.logger import logger
-import os
 
 class SignalPredictor:
     def __init__(self):
@@ -19,6 +18,7 @@ class SignalPredictor:
 
     def get_trade_duration(self, timeframe: str) -> str:
         durations = {
+            '5m': 'Up to 1 hour',
             '15m': 'Up to 1 hour',
             '1h': 'Up to 6 hours',
             '4h': 'Up to 24 hours',
@@ -27,53 +27,9 @@ class SignalPredictor:
         return durations.get(timeframe, 'Unknown')
 
     def calculate_tp_hit_possibilities(self, symbol: str, direction: str, entry: float, tp1: float, tp2: float, tp3: float) -> tuple:
-        try:
-            file_path = 'logs/signals_log_new.csv'
-            if not os.path.exists(file_path):
-                logger.warning(f"[{symbol}] No historical signals for TP hit calculation")
-                return 60.0, 40.0, 20.0
-
-            df = pd.read_csv(file_path)
-            logger.info(f"[{symbol}] CSV columns: {df.columns.tolist()}")
-            if 'symbol' not in df.columns:
-                logger.error(f"[{symbol}] 'symbol' column missing in signals_log_new.csv")
-                return 60.0, 40.0, 20.0
-
-            df = df[df['symbol'] == symbol]
-            if df.empty:
-                logger.warning(f"[{symbol}] No historical signals for this symbol")
-                return 60.0, 40.0, 20.0
-
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df = df[df['timestamp'] >= pd.Timestamp.now() - pd.Timedelta(days=30)]
-            df = df[df['direction'] == direction]
-
-            if df.empty:
-                logger.warning(f"[{symbol}] No recent signals for {direction}")
-                return 60.0, 40.0, 20.0
-
-            # Handle missing TP hit columns
-            tp1_hits = len(df[df['tp1_hit'] == True]) if 'tp1_hit' in df.columns else 0
-            tp2_hits = len(df[df['tp2_hit'] == True]) if 'tp2_hit' in df.columns else 0
-            tp3_hits = len(df[df['tp3_hit'] == True]) if 'tp3_hit' in df.columns else 0
-            total_signals = len(df)
-
-            tp1_possibility = (tp1_hits / total_signals * 100) if total_signals > 0 else 60.0
-            tp2_possibility = (tp2_hits / total_signals * 100) if total_signals > 0 else 40.0
-            tp3_possibility = (tp3_hits / total_signals * 100) if total_signals > 0 else 20.0
-
-            tp1_distance = abs(tp1 - entry) / entry * 100
-            tp2_distance = abs(tp2 - entry) / entry * 100
-            tp3_distance = abs(tp3 - entry) / entry * 100
-            tp1_possibility *= min(1.0, 2.0 / max(tp1_distance, 0.01))
-            tp2_possibility *= min(1.0, 3.0 / max(tp2_distance, 0.01))
-            tp3_possibility *= min(1.0, 4.0 / max(tp3_distance, 0.01))
-
-            logger.info(f"[{symbol}] TP possibilities: TP1={tp1_possibility:.2f}%, TP2={tp2_possibility:.2f}%, TP3={tp3_possibility:.2f}%")
-            return max(min(tp1_possibility, 95.0), 50.0), max(min(tp2_possibility, 80.0), 30.0), max(min(tp3_possibility, 60.0), 10.0)
-        except Exception as e:
-            logger.error(f"[{symbol}] Error calculating TP hit possibilities: {str(e)}")
-            return 60.0, 40.0, 20.0
+        # Historical check removed as per user request
+        logger.info(f"[{symbol}] Using fixed TP possibilities: TP1=60%, TP2=40%, TP3=20%")
+        return 60.0, 40.0, 20.0
 
     async def predict_signal(self, symbol: str, df: pd.DataFrame, timeframe: str) -> dict:
         try:
@@ -93,13 +49,11 @@ class SignalPredictor:
             conditions = []
             logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.4f}, MACD Signal: {latest['macd_signal']:.4f}, ADX: {latest['adx']:.2f}, Close: {latest['close']:.2f}")
 
-            # RSI conditions
             if latest['rsi'] < 30:
                 conditions.append("Oversold RSI")
             elif latest['rsi'] > 70:
                 conditions.append("Overbought RSI")
 
-            # MACD conditions
             if abs(latest['macd']) < 1e-5:
                 logger.warning(f"[{symbol}] MACD near zero, relying on RSI/ADX")
             else:
@@ -108,29 +62,24 @@ class SignalPredictor:
                 elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
                     conditions.append("Bearish MACD")
 
-            # ADX condition
             if latest['adx'] > 25:
                 conditions.append("Strong Trend")
 
-            # Bollinger Bands
             if latest['close'] > latest['bollinger_upper']:
                 conditions.append("Above Bollinger Upper")
             elif latest['close'] < latest['bollinger_lower']:
                 conditions.append("Below Bollinger Lower")
 
-            # Stochastic Oscillator
             if latest['stoch_k'] < 20 and latest['stoch_k'] < latest['stoch_d']:
                 conditions.append("Oversold Stochastic")
             elif latest['stoch_k'] > 80 and latest['stoch_k'] > latest['stoch_d']:
                 conditions.append("Overbought Stochastic")
 
-            # VWAP
             if latest['close'] > latest['vwap']:
                 conditions.append("Above VWAP")
             elif latest['close'] < latest['vwap']:
                 conditions.append("Below VWAP")
 
-            # Candlestick patterns
             if is_bullish_engulfing(df).iloc[-1]:
                 conditions.append("Bullish Engulfing")
             if is_bearish_engulfing(df).iloc[-1]:
@@ -146,26 +95,24 @@ class SignalPredictor:
             if is_three_black_crows(df).iloc[-1]:
                 conditions.append("Three Black Crows")
 
-            # Support/Resistance proximity
             current_price = latest['close']
             support = sr_levels['support']
             resistance = sr_levels['resistance']
-            min_sr_gap = current_price * 0.01  # Ensure 1% gap
+            min_sr_gap = current_price * 0.01
             if abs(resistance - support) < min_sr_gap:
                 support -= min_sr_gap / 2
                 resistance += min_sr_gap / 2
+                logger.info(f"[{symbol}] Adjusted support/resistance: Support={support:.2f}, Resistance={resistance:.2f}")
             if abs(current_price - support) / current_price < 0.05:
                 conditions.append("Near Support")
             if abs(current_price - resistance) / current_price < 0.05:
                 conditions.append("Near Resistance")
 
-            # Volume confirmation
             if 'volume_sma_20' in latest and latest['volume'] > latest['volume_sma_20'] * 1.2:
                 conditions.append("High Volume")
 
             logger.info(f"[{symbol}] {timeframe} - Conditions: {', '.join(conditions) if conditions else 'None'}")
 
-            # Confidence calculation
             confidence = 50.0
             weights = []
             if "Bullish MACD" in conditions or "Bearish MACD" in conditions:
@@ -205,7 +152,6 @@ class SignalPredictor:
             confidence = min(confidence, 95.0)
             logger.info(f"[{symbol}] {timeframe} - Confidence: {confidence:.2f}, Weights: {', '.join(weights) if weights else 'None'}")
 
-            # Direction logic
             direction = None
             bullish_conditions = ["Bullish MACD", "Oversold RSI", "Bullish Engulfing", "Hammer", "Near Support", "Three White Soldiers", "Below Bollinger Lower", "Oversold Stochastic", "Above VWAP"]
             bearish_conditions = ["Bearish MACD", "Overbought RSI", "Bearish Engulfing", "Shooting Star", "Near Resistance", "Three Black Crows", "Above Bollinger Upper", "Overbought Stochastic", "Below VWAP"]
@@ -221,7 +167,6 @@ class SignalPredictor:
                 logger.info(f"[{symbol}] No clear direction: Bullish={bullish_count}, Bearish={bearish_count}, Confidence={confidence:.2f}, Conditions={len(conditions)}")
                 return None
 
-            # Calculate TP/SL
             atr = max(latest.get('atr', 0.005 * current_price), 0.02 * current_price)
             entry = round(current_price, 2)
             if direction == "LONG":
