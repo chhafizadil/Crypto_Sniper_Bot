@@ -6,8 +6,8 @@ import pandas as pd
 import psutil
 from telegram import Bot
 import os
+from datetime import datetime
 from dotenv import load_dotenv
-import time
 
 logger.info("[Engine] File loaded: core/engine.py")
 
@@ -76,12 +76,10 @@ async def run_engine():
             cpu_percent = psutil.cpu_percent(interval=0.1)
             logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
 
-            # Cooldown check
             if symbol in last_signal_time and (datetime.now() - last_signal_time[symbol]).total_seconds() < 6 * 3600:
                 logger.info(f"[Engine] [{symbol}] On cooldown")
                 continue
 
-            # Volume check
             try:
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume_24h = ticker.get('quoteVolume', 0)
@@ -89,7 +87,7 @@ async def run_engine():
                 last_price = ticker.get('last', 0)
                 if quote_volume_24h == 0 and base_volume > 0 and last_price > 0:
                     quote_volume_24h = base_volume * last_price
-                if quote_volume_24h < 100000:  # Reduced from 100,000
+                if quote_volume_24h < 100000:
                     logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
                     continue
             except Exception as e:
@@ -99,7 +97,7 @@ async def run_engine():
             logger.info(f"[Engine] [{symbol}] Analyzing symbol")
             try:
                 signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
-                if signal and signal["confidence"] >= 60 and signal["tp1_possibility"] >= 60:  # Reduced from 65
+                if signal and signal["confidence"] >= 60 and signal["tp1_possibility"] >= 60:
                     message = (
                         f"🚨 {signal['symbol']} Signal\n"
                         f"Timeframe: {signal['timeframe']}\n"
