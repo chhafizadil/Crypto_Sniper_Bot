@@ -38,7 +38,7 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
         timeframe_agreement = agreement_count / len(timeframes)
         logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)}")
 
-        if timeframe_agreement < 0.25:  # Reduced from 0.5
+        if timeframe_agreement < 0.1:  # Reduced from 0.25
             logger.info(f"[{symbol}] Insufficient timeframe agreement ({agreement_count}/{len(timeframes)})")
             return None
 
@@ -52,12 +52,11 @@ async def analyze_symbol_multi_timeframe(symbol: str, exchange: ccxt.Exchange, t
                 return None
 
             latest = df.iloc[-1]
-            # Relaxed volume check
-            if latest['volume'] < 1.2 * latest['volume_sma_20']:  # Reduced from 1.5x
+            if latest['volume'] < 1.2 * latest['volume_sma_20']:
                 logger.info(f"[{symbol}] Signal rejected: Volume {latest['volume']:.2f} < 1.2x SMA")
                 return None
 
-            if latest['quote_volume_24h'] < 100000:  # Reduced from 500,000
+            if latest['quote_volume_24h'] < 100000:
                 logger.info(f"[{symbol}] Signal rejected: Quote volume ${latest['quote_volume_24h']:,.2f} < $100,000")
                 return None
 
