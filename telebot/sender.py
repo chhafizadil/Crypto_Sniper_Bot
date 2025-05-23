@@ -12,8 +12,8 @@ import requests
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 500000  # $1M minimum 24h volume
-MIN_AGREEMENT = 1  # At least 3/4 timeframe agreement
+MIN_VOLUME = 500000  # Set to 500,000 USD
+MIN_AGREEMENT = 2  # Set to 2/4
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -84,7 +84,7 @@ def get_24h_volume(symbol):
 
 def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
     if "USDT" in symbol and symbol != "USDT/USD":
-        max_tp_percent = 0.01  # 1% max for stablecoins
+        max_tp_percent = 0.01
         tp1 = min(tp1, entry * (1 + max_tp_percent))
         tp2 = min(tp2, entry * (1 + max_tp_percent * 1.5))
         tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
@@ -123,13 +123,13 @@ async def signal(update, context):
         
         # Validate volume and agreement
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
-        agreement = latest_signal.get('agreement', 0) / 100 * 3
+        agreement = latest_signal.get('agreement', 0) / 100 * 4  # Changed to 4 for 2/4 check
         if volume < MIN_VOLUME:
             logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
             await update.message.reply_text("Insufficient signal volume.")
             return
         if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {latest_signal['symbol']}: {agreement}/3")
+            logger.warning(f"Insufficient timeframe agreement for {latest_signal['symbol']}: {agreement}/4")
             await update.message.reply_text("Insufficient timeframe agreement for signal.")
             return
 
@@ -242,12 +242,12 @@ async def send_signal(signal):
         
         # Validate volume and agreement
         volume, volume_str = get_24h_volume(signal['symbol'])
-        agreement = signal.get('agreement', 0) / 100 * 3
+        agreement = signal.get('agreement', 0) / 100 * 4  # Changed to 4 for 2/4 check
         if volume < MIN_VOLUME:
             logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
             return
         if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/3")
+            logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/4")
             return
 
         # Update dynamic fields
