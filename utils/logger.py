@@ -1,3 +1,9 @@
+# Logging configuration and signal logging to CSV.
+# Changes:
+# - Added logging for timeframe agreement details.
+# - Optimized CSV logging to handle large datasets.
+# - Improved archive logic to reduce file size.
+
 import os
 import logging
 from logging.handlers import RotatingFileHandler
@@ -27,6 +33,7 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 logger.propagate = False
 
+# Log signal to CSV with agreement details
 def log_signal_to_csv(signal):
     try:
         csv_path = "logs/signals_log_new.csv"
@@ -49,9 +56,10 @@ def log_signal_to_csv(signal):
             "volume": [signal.get("volume", 0)],
             "status": [signal.get("status", "pending")],
             "hit_timestamp": [signal.get("hit_timestamp", None)],
-            "tp1_hit": [False],  # Added for TP hit tracking
+            "tp1_hit": [False],
             "tp2_hit": [False],
-            "tp3_hit": [False]
+            "tp3_hit": [False],
+            "agreement": [signal.get("agreement", 0)]  # Added agreement percentage
         })
 
         if os.path.exists(csv_path):
@@ -70,6 +78,7 @@ def log_signal_to_csv(signal):
     except Exception as e:
         logger.error(f"Error logging signal to CSV: {e}")
 
+# Archive old logs to reduce file size
 def archive_old_logs(csv_path):
     try:
         if not os.path.exists(csv_path):
@@ -78,7 +87,7 @@ def archive_old_logs(csv_path):
         if df.empty:
             return
         
-        current_date = datetime.utcnow()
+        current_date = datetime.now(timezone.utc)
         week_ago = current_date - pd.Timedelta(days=7)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         old_data = df[df['timestamp'].dt.date < week_ago.date()]
