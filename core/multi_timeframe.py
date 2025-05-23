@@ -17,7 +17,7 @@ async def fetch_ohlcv(exchange, symbol, timeframe, limit=50):
         logger.error(f"[{symbol}] Failed to fetch OHLCV for {timeframe}: {e}")
         return None
 
-async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','1h', '4h', '1d']):
+async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m', '1h', '4h', '1d']):
     try:
         signals = []
         for timeframe in timeframes:
@@ -53,7 +53,7 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','
                 timeframe_direction = "SHORT"
 
             # Volume filter
-            if latest["volume"] < 1.5 * latest["volume_sma_20"]:  # Changed to 1.5x for accuracy
+            if latest["volume"] < 1.5 * latest["volume_sma_20"]:
                 logger.warning(f"[{symbol}] Low volume on {timeframe}")
                 continue
 
@@ -69,9 +69,9 @@ async def multi_timeframe_boost(symbol, exchange, direction, timeframes=['15m','
             if timeframe_direction == direction:
                 signals.append({'timeframe': timeframe, 'direction': direction})
 
-        # Check for 2/4 timeframe agreement
+        # Check for 1/4 timeframe agreement
         agreement_count = len(signals)
-        if agreement_count >= 2:  # Changed to 2/4
+        if agreement_count >= 1:  # Relaxed to 1/4
             logger.info(f"[{symbol}] Timeframe agreement: {agreement_count}/{len(timeframes)} for {direction}")
             return signals, agreement_count / len(timeframes) * 100
         else:
