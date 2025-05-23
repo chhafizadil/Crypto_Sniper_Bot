@@ -12,7 +12,7 @@ import requests
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 1000000  # $1M minimum 24h volume
+MIN_VOLUME = 500000  # $1M minimum 24h volume
 MIN_AGREEMENT = 1  # At least 3/4 timeframe agreement
 
 def format_timestamp_to_pk(utc_timestamp_str):
