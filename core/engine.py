@@ -37,7 +37,6 @@ async def run_engine():
                 logger.error(f"[Engine] Missing environment variable: {var}")
                 return
 
-        # Skip model check since it's not used
         logs_dir = "logs"
         if not os.path.exists(logs_dir):
             logger.info(f"[Engine] Creating logs directory: {logs_dir}")
@@ -72,18 +71,17 @@ async def run_engine():
             logger.error(f"[Engine] Error loading markets: {str(e)}")
             return
 
-        for symbol in symbols[:10]:  # Reduced from 15 to lower CPU usage
+        for symbol in symbols[:10]:
             memory_before = psutil.Process().memory_info().rss / 1024 / 1024
             cpu_percent = psutil.cpu_percent(interval=0.1)
             logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
 
-            # Check volume
             try:
                 ticker = await exchange.fetch_ticker(symbol)
                 quote_volume_24h = ticker.get('quoteVolume', 0)
                 last_price = ticker.get('last', 0)
                 if quote_volume_24h < 100000:
-                    logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000) or price ({last_price})")
+                    logger.info(f"[Engine] [{symbol}] Skipped: Low volume (${quote_volume_24h:,.2f} < $100,000)")
                     continue
             except Exception as e:
                 logger.error(f"[Engine] [{symbol}] Error fetching ticker: {str(e)}")
@@ -92,7 +90,7 @@ async def run_engine():
             logger.info(f"[Engine] [{symbol}] Analyzing symbol")
             try:
                 signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
-                if signal and signal["confidence"] >= 65 and signal["tp1_possibility"] >= 65:  # Lowered from 70
+                if signal and signal["confidence"] >= 60 and signal["tp1_possibility"] >= 60:
                     message = (
                         f"🚨 {signal['symbol']} Signal\n"
                         f"Timeframe: {signal['timeframe']}\n"
