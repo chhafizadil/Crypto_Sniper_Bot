@@ -1,9 +1,8 @@
-# Telegram bot integration for sending signals and handling commands.
-# Changes:
-# - Added batch sending to reduce Telegram API calls.
-# - Fixed event loop to prevent "Task was destroyed" error.
-# - Fixed datetime.utcnow() deprecation.
-# - Improved error handling for robust operation.
+# ٹیلیگرام بوٹ انٹیگریشن سگنلز بھیجنے اور کمانڈز ہینڈل کرنے کے لیے۔
+# تبدیلیاں:
+# - بیچنگ ہٹائی، اصل سگنل سینڈنگ بحال کی۔
+# - والیوم چیک کو $1,000,000 پر اپ ڈیٹ کیا۔
+# - غیر جانبدار TP اور لیوریج منطق شامل کی۔
 
 import telegram
 import asyncio
@@ -11,7 +10,7 @@ import pandas as pd
 from telegram.ext import Application, CommandHandler
 from telegram.error import Conflict, NetworkError, TelegramError
 from utils.logger import logger
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import os
 import pytz
 import requests
@@ -24,11 +23,7 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
 MIN_VOLUME = 1000000
 
-# Batch signals for sending to reduce API calls
-signal_batch = []
-BATCH_INTERVAL = 300  # Send batch every 5 minutes
-
-# Convert UTC timestamp to Pakistan time
+# UTC ٹائم اسٹیمپ کو پاکستان ٹائم میں
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00'))
@@ -36,16 +31,16 @@ def format_timestamp_to_pk(utc_timestamp_str):
         pk_time = utc_time.astimezone(pytz.timezone("Asia/Karachi"))
         return pk_time.strftime("%d %B %Y, %I:%M %p")
     except Exception as e:
-        logger.error(f"Error converting timestamp: {str(e)}")
+        logger.error(f"ٹائم اسٹیمپ تبدیل کرنے میں خرابی: {str(e)}")
         return utc_timestamp_str
 
-# Calculate TP probabilities (neutral)
+# TP امکانات (غیر جانبدار)
 def calculate_tp_probabilities(indicators):
-    logger.info("Using dynamic TP probabilities based on indicators")
+    logger.info("انڈیکیٹرز کی بنیاد پر متحرک TP امکانات")
     base_prob = 50
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
-    if "Bullish MACD" in indicators or "Bearish MACD" in indicators:
+    if "MACD" in indicators:
         base_prob += 10
     if "Strong Trend" in indicators:
         base_prob += 10
@@ -57,22 +52,22 @@ def calculate_tp_probabilities(indicators):
         "TP3": min(base_prob * 0.5, 40)
     }
 
-# Determine leverage (balanced)
+# لیوریج کا تعین (غیر جانبدار)
 def determine_leverage(indicators):
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
-    if "Bullish MACD" in indicators or "Bearish MACD" in indicators:
+    if "MACD" in indicators:
         score += 2
     if "Strong Trend" in indicators:
         score += 2
-    if "Above VWAP" in indicators or "Below VWAP" in indicators:
+    if "VWAP" in indicators:
         score += 1
-    if "Overbought Stochastic" in indicators or "Oversold Stochastic" in indicators:
+    if "Stochastic" in indicators:
         score -= 1
     return "40x" if score >= 5 else "30x" if score >= 3 else "20x" if score >= 1 else "10x"
 
-# Fetch 24h volume
+# 24 گھنٹے کا والیوم
 def get_24h_volume(symbol):
     try:
         symbol_clean = symbol.replace("/", "").upper()
@@ -82,10 +77,10 @@ def get_24h_volume(symbol):
         quote_volume = float(data.get("quoteVolume", 0))
         return quote_volume, f"${quote_volume:,.2f}"
     except Exception as e:
-        logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
+        logger.error(f"{symbol} کے لیے 24 گھنٹے والیوم حاصل کرنے میں خرابی: {str(e)}")
         return 0, "$0.00"
 
-# Adjust TP for stablecoins
+# سٹیبل کوائن کے لیے TP
 def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
     if "USDT" in symbol and symbol != "USDT/USD":
         max_tp_percent = 0.01
@@ -94,30 +89,30 @@ def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
         tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
     return tp1, tp2, tp3
 
-# Command handlers
+# کمانڈ ہینڈلرز
 async def start(update, context):
-    await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
+    await update.message.reply_text("Crypto Signal Bot چل رہا ہے! /summary, /report, /status, /signal, یا /help استعمال کریں۔")
 
 async def help(update, context):
     help_text = (
-        "📚 *Crypto Signal Bot Commands*\n"
-        "/start - Start the bot\n"
-        "/summary - Get today's signal summary\n"
-        "/report - Get detailed daily trading report\n"
-        "/status - Check bot status\n"
-        "/signal - Get the latest signal\n"
-        "/test - Test bot connectivity\n"
-        "/help - Show this help message"
+        "📚 *Crypto Signal Bot کمانڈز*\n"
+        "/start - بوٹ شروع\n"
+        "/summary - آج کا سگنل خلاصہ\n"
+        "/report - تفصیلی روزانہ ٹریڈنگ رپورٹ\n"
+        "/status - بوٹ کی حالت\n"
+        "/signal - تازہ سگنل\n"
+        "/test - بوٹ کنیکٹیویٹی ٹیسٹ\n"
+        "/help - یہ مدد پیغام"
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def test(update, context):
     try:
-        await update.message.reply_text("Test message from Crypto Signal Bot!")
-        logger.info("Test message sent successfully")
+        await update.message.reply_text("Crypto Signal Bot سے ٹیسٹ پیغام!")
+        logger.info("ٹیسٹ پیغام کامیابی سے بھیجا")
     except Exception as e:
-        logger.error(f"Error sending test message: {str(e)}")
-        await update.message.reply_text(f"Error sending test message: {str(e)}")
+        logger.error(f"ٹیسٹ پیغام بھیجنے میں خرابی: {str(e)}")
+        await update.message.reply_text(f"ٹیسٹ پیغام بھیجنے میں خرابی: {str(e)}")
 
 async def status(update, context):
     try:
@@ -125,33 +120,33 @@ async def status(update, context):
         bot_info = await bot.get_me()
         webhook_info = await bot.get_webhook_info()
         status_text = (
-            f"🟢 Bot is running normally\n"
-            f"🤖 Bot: @{bot_info.username}\n"
-            f"🌐 Webhook: {webhook_info.url or 'Not set'}\n"
-            f"📡 Pending Updates: {webhook_info.pending_update_count or 0}"
+            f"🟢 بوٹ عام طور پر چل رہا ہے\n"
+            f"🤖 بوٹ: @{bot_info.username}\n"
+            f"🌐 ویب ہک: {webhook_info.url or 'سیٹ نہیں'}\n"
+            f"📡 زیر التوا اپ ڈیٹس: {webhook_info.pending_update_count or 0}"
         )
         await update.message.reply_text(status_text, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Error checking status: {str(e)}")
-        await update.message.reply_text("🔴 Error checking bot status.", parse_mode='Markdown')
+        logger.error(f"حالت چیک کرنے میں خرابی: {str(e)}")
+        await update.message.reply_text("🔴 بوٹ کی حالت چیک کرنے میں خرابی۔", parse_mode='Markdown')
 
 async def signal(update, context):
     try:
         file_path = 'logs/signals.csv'
         if not os.path.exists(file_path):
-            await update.message.reply_text("No signals available.")
+            await update.message.reply_text("کوئی سگنلز دستیاب نہیں۔")
             return
         df = pd.read_csv(file_path)
         if df.empty:
-            await update.message.reply_text("No signals available.")
+            await update.message.reply_text("کوئی سگنلز دستیاب نہیں۔")
             return
         latest_signal = df.iloc[-1].to_dict()
         conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
         
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
         if volume < MIN_VOLUME:
-            logger.warning(f"Low volume for {latest_signal['symbol']}: {volume_str}")
-            await update.message.reply_text("Insufficient signal volume.")
+            logger.warning(f"{latest_signal['symbol']} کے لیے کم والیوم: {volume_str}")
+            await update.message.reply_text("ناکافی سگنل والیوم۔")
             return
 
         probabilities = calculate_tp_probabilities(latest_signal['conditions'])
@@ -186,22 +181,22 @@ async def signal(update, context):
         )
         await update.message.reply_text(message, parse_mode='Markdown')
     except Exception as e:
-        logger.error(f"Error fetching latest signal: {str(e)}")
-        await update.message.reply_text("Error fetching latest signal.")
+        logger.error(f"تازہ سگنل حاصل کرنے میں خرابی: {str(e)}")
+        await update.message.reply_text("تازہ سگنل حاصل کرنے میں خرابی۔")
 
-# Generate daily summary report
+# روزانہ خلاصہ رپورٹ
 async def generate_daily_summary():
     try:
         file_path = 'logs/signals.csv'
         if not os.path.exists(file_path):
-            logger.warning("Signals log file not found")
+            logger.warning("سگنلز لاگ فائل نہیں ملی")
             return None
         df = pd.read_csv(file_path)
         today = datetime.now(pytz.timezone("Asia/Karachi")).date()
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df_today = df[df['timestamp'].dt.date == today]
         if df_today.empty:
-            logger.info("No signals found for today")
+            logger.info("آج کے لیے کوئی سگنلز نہیں ملے")
             return None
         total_signals = len(df_today)
         long_signals = len(df_today[df_today['direction'] == 'LONG'])
@@ -220,26 +215,26 @@ async def generate_daily_summary():
         sl_hits = len(df_today[df_today.get('sl_hit', False) == True]) if 'sl_hit' in df_today else 0
         report = (
             f"📊 *Daily Trading Summary ({today})*\n"
-            f"📈 Total Signals: {total_signals}\n"
-            f"🚀 Long Signals: {long_signals}\n"
-            f"📉 Short Signals: {short_signals}\n"
-            f"🎯 Successful Signals: {successful_signals} ({successful_percentage:.2f}%)\n"
-            f"🔍 Average Confidence: {avg_confidence:.2f}%\n"
-            f"🏆 Top Symbol: {top_symbol}\n"
-            f"📊 Most Active Timeframe: {most_active_timeframe}\n"
-            f"⚡ Total Volume Analyzed: {total_volume:,.0f} (USDT)\n"
-            f"🔎 Signal Status Breakdown:\n"
-            f"   - TP1 Hit: {tp1_hits}\n"
-            f"   - TP2 Hit: {tp2_hits}\n"
-            f"   - TP3 Hit: {tp3_hits}\n"
-            f"   - SL Hit: {sl_hits}\n"
-            f"   - Pending: {pending_signals}\n"
-            f"Generated at: {datetime.now(pytz.timezone('Asia/Karachi')).strftime('%Y-%m-%d %H:%M:%S')}"
+            f"📈 کل سگنلز: {total_signals}\n"
+            f"🚀 لانگ سگنلز: {long_signals}\n"
+            f"📉 شارٹ سگنلز: {short_signals}\n"
+            f"🎯 کامیاب سگنلز: {successful_signals} ({successful_percentage:.2f}%)\n"
+            f"🔍 اوسط اعتماد: {avg_confidence:.2f}%\n"
+            f"🏆 ٹاپ سِمبل: {top_symbol}\n"
+            f"📊 سب سے فعال ٹائم فریم: {most_active_timeframe}\n"
+            f"⚡ کل تجزیہ شدہ والیوم: {total_volume:,.0f} (USDT)\n"
+            f"🔎 سگنل اسٹیٹس بریک ڈاؤن:\n"
+            f"   - TP1 ہٹ: {tp1_hits}\n"
+            f"   - TP2 ہٹ: {tp2_hits}\n"
+            f"   - TP3 ہٹ: {tp3_hits}\n"
+            f"   - SL ہٹ: {sl_hits}\n"
+            f"   - زیر التوا: {pending_signals}\n"
+            f"بنایا گیا: {datetime.now(pytz.timezone('Asia/Karachi')).strftime('%Y-%m-%d %H:%M:%S')}"
         )
-        logger.info("Daily report generated successfully")
+        logger.info("روزانہ رپورٹ کامیابی سے بنائی")
         return report
     except Exception as e:
-        logger.error(f"Error generating daily report: {str(e)}")
+        logger.error(f"روزانہ رپورٹ بنانے میں خرابی: {str(e)}")
         return None
 
 async def summary(update, context):
@@ -247,117 +242,100 @@ async def summary(update, context):
     if report:
         await update.message.reply_text(report, parse_mode='Markdown')
     else:
-        await update.message.reply_text("No signals available for today.")
+        await update.message.reply_text("آج کے لیے کوئی سگنلز نہیں۔")
 
 async def report(update, context):
     report = await generate_daily_summary()
     if report:
         await update.message.reply_text(report, parse_mode='Markdown')
     else:
-        await update.message.reply_text("No detailed report available for today.")
+        await update.message.reply_text("آج کے لیے کوئی تفصیلی رپورٹ نہیں۔")
 
-# Send batched signals to Telegram
+# سگنل بھیجیں
 async def send_signal(signal):
-    global signal_batch
-    signal_batch.append(signal)
-    logger.info(f"Added signal for {signal['symbol']} to batch. Current batch size: {len(signal_batch)}")
-
-# Process and send batched signals
-async def process_signal_batch():
-    global signal_batch
-    if not signal_batch:
-        return
     max_retries = 3
     retry_delay = 5
     for attempt in range(max_retries):
         try:
             bot = telegram.Bot(token=BOT_TOKEN)
-            for signal in signal_batch:
-                conditions_str = ", ".join(signal.get('conditions', [])) or "None"
-                
-                volume, volume_str = get_24h_volume(signal['symbol'])
-                if volume < MIN_VOLUME:
-                    logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
-                    continue
+            conditions_str = ", ".join(signal.get('conditions', [])) or "None"
+            
+            volume, volume_str = get_24h_volume(signal['symbol'])
+            if volume < MIN_VOLUME:
+                logger.warning(f"{signal['symbol']} کے لیے کم والیوم: {volume_str}")
+                return
 
-                probabilities = calculate_tp_probabilities(signal.get('conditions', []))
-                signal['tp1_possibility'] = probabilities['TP1']
-                signal['tp2_possibility'] = probabilities['TP2']
-                signal['tp3_possibility'] = probabilities['TP3']
-                signal['leverage'] = determine_leverage(signal.get('conditions', []))
-                signal['quote_volume_24h'] = volume_str
-                signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-                signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
-                    signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
-                )
+            probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+            signal['tp1_possibility'] = probabilities['TP1']
+            signal['tp2_possibility'] = probabilities['TP2']
+            signal['tp3_possibility'] = probabilities['TP3']
+            signal['leverage'] = determine_leverage(signal.get('conditions', []))
+            signal['quote_volume_24h'] = volume_str
+            signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
+            signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
+                signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
+            )
 
-                message = (
-                    f"📈 *Trading Signal*\n"
-                    f"💱 Symbol: {signal['symbol']}\n"
-                    f"📊 Direction: {signal['direction']}\n"
-                    f"⏰ Timeframe: {signal['timeframe']}\n"
-                    f"⏳ Duration: {signal['trade_duration']}\n"
-                    f"💰 Entry: ${signal['entry']:.2f}\n"
-                    f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
-                    f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
-                    f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
-                    f"🛑 SL: ${signal['sl']:.2f}\n"
-                    f"🔍 Confidence: {signal['confidence']:.2f}%\n"
-                    f"⚡ Type: {signal['trade_type']}\n"
-                    f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
-                    f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
-                    f"📈 24h Volume: {signal['quote_volume_24h']}\n"
-                    f"🔎 Indicators: {conditions_str}\n"
-                    f"🕒 Timestamp: {signal['timestamp']}"
-                )
-                logger.info(f"Sending batched signal for {signal['symbol']} (Attempt {attempt+1}/{max_retries})")
-                await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-                logger.info(f"Signal sent: {signal['symbol']} - {signal['direction']}")
-            signal_batch = []  # Clear batch after sending
+            message = (
+                f"📈 *Trading Signal*\n"
+                f"💱 Symbol: {signal['symbol']}\n"
+                f"📊 Direction: {signal['direction']}\n"
+                f"⏰ Timeframe: {signal['timeframe']}\n"
+                f"⏳ Duration: {signal['trade_duration']}\n"
+                f"💰 Entry: ${signal['entry']:.2f}\n"
+                f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
+                f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
+                f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
+                f"🛑 SL: ${signal['sl']:.2f}\n"
+                f"🔍 Confidence: {signal['confidence']:.2f}%\n"
+                f"⚡ Type: {signal['trade_type']}\n"
+                f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
+                f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
+                f"📈 24h Volume: {signal['quote_volume_24h']}\n"
+                f"🔎 Indicators: {conditions_str}\n"
+                f"🕒 Timestamp: {signal['timestamp']}"
+            )
+            logger.info(f"{signal['symbol']} کے لیے سگنل ٹیلیگرام پر بھیجنے کی کوشش (کوشش {attempt+1}/{max_retries})")
+            await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+            logger.info(f"سگنل کامیابی سے بھیجا: {signal['symbol']} - {signal['direction']}")
             return
         except NetworkError as ne:
-            logger.error(f"Network error sending batch: {str(ne)}")
+            logger.error(f"{signal['symbol']} کے لیے نیٹ ورک خرابی: {str(ne)}")
             if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
+                logger.info(f"{retry_delay} سیکنڈ میں دوبارہ کوشش...")
                 await asyncio.sleep(retry_delay)
         except TelegramError as te:
-            logger.error(f"Telegram error sending batch: {str(te)}")
+            logger.error(f"{signal['symbol']} کے لیے ٹیلیگرام خرابی: {str(te)}")
             return
         except Exception as e:
-            logger.error(f"Failed to send batch: {str(e)}")
+            logger.error(f"{signal['symbol']} کے لیے سگنل بھیجنے میں ناکامی: {str(e)}")
             return
-    logger.error(f"Failed to send batch after {max_retries} attempts")
+    logger.error(f"{signal['symbol']} کے لیے {max_retries} کوششوں کے بعد سگنل ناکام")
 
-# Background task for batch processing
-async def batch_processor():
-    while True:
-        await process_signal_batch()
-        await asyncio.sleep(BATCH_INTERVAL)
-
-# Start Telegram bot with proper event loop handling
+# بوٹ شروع
 async def start_bot():
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         try:
             await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Telegram webhook deleted successfully")
+            logger.info("ٹیلیگرام ویب ہک کامیابی سے ہٹایا")
         except Exception as e:
-            logger.warning(f"Error deleting webhook: {str(e)}")
+            logger.warning(f"ویب ہک ہٹانے میں خرابی: {str(e)}")
         
         try:
             await bot.set_webhook(url=WEBHOOK_URL)
-            logger.info(f"Webhook set to {WEBHOOK_URL}")
+            logger.info(f"ویب ہک سیٹ: {WEBHOOK_URL}")
         except Conflict:
-            logger.warning("Webhook conflict detected, attempting to reset")
+            logger.warning("ویب ہک تنازع، دوبارہ سیٹ کر رہا ہوں")
             await bot.delete_webhook(drop_pending_updates=True)
             await bot.set_webhook(url=WEBHOOK_URL)
-            logger.info(f"Webhook reset to {WEBHOOK_URL}")
+            logger.info(f"ویب ہک ری سیٹ: {WEBHOOK_URL}")
 
         try:
-            await bot.send_message(chat_id=CHAT_ID, text="Bot initialized successfully!")
-            logger.info("Test message sent to Telegram")
+            await bot.send_message(chat_id=CHAT_ID, text="بوٹ کامیابی سے شروع!")
+            logger.info("ٹیلیگرام پر ٹیسٹ پیغام بھیجا")
         except Exception as e:
-            logger.error(f"Failed to send test message: {str(e)}")
+            logger.error(f"ٹیسٹ پیغام بھیجنے میں ناکامی: {str(e)}")
 
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
@@ -369,9 +347,8 @@ async def start_bot():
         application.add_handler(CommandHandler("help", help))
         await application.initialize()
         await application.start()
-        asyncio.create_task(batch_processor())  # Start batch processor
-        logger.info("Telegram webhook bot started successfully")
+        logger.info("ٹیلیگرام ویب ہک بوٹ کامیابی سے شروع")
         return application
     except Exception as e:
-        logger.error(f"Error starting Telegram bot: {str(e)}")
+        logger.error(f"ٹیلیگرام بوٹ شروع کرنے میں خرابی: {str(e)}")
         raise
