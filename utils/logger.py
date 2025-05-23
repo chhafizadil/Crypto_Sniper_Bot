@@ -1,8 +1,7 @@
-# Logging configuration and signal logging to CSV.
-# Changes:
-# - Added logging for timeframe agreement details.
-# - Optimized CSV logging to handle large datasets.
-# - Improved archive logic to reduce file size.
+# لاگنگ کنفیگریشن اور سگنل لاگنگ CSV میں۔
+# تبدیلیاں:
+# - ایگریمنٹ تفصیلات کے لیے لاگنگ شامل کی۔
+# - CSV لاگنگ کو آپٹمائز کیا۔
 
 import os
 import logging
@@ -33,7 +32,7 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 logger.propagate = False
 
-# Log signal to CSV with agreement details
+# سگنل کو CSV میں لاگ کریں
 def log_signal_to_csv(signal):
     try:
         csv_path = "logs/signals_log_new.csv"
@@ -59,7 +58,7 @@ def log_signal_to_csv(signal):
             "tp1_hit": [False],
             "tp2_hit": [False],
             "tp3_hit": [False],
-            "agreement": [signal.get("agreement", 0)]  # Added agreement percentage
+            "agreement": [signal.get("agreement", 0)]
         })
 
         if os.path.exists(csv_path):
@@ -69,16 +68,16 @@ def log_signal_to_csv(signal):
 
         if not data.empty:
             data.to_csv(csv_path, index=False)
-            logger.info(f"Signal logged to CSV for {signal.get('symbol', '')}")
+            logger.info(f"{signal.get('symbol', '')} کے لیے سگنل CSV میں لاگ")
         else:
-            logger.error("No valid data to log to CSV")
+            logger.error("CSV میں لاگ کرنے کے لیے کوئی درست ڈیٹا نہیں")
 
         archive_old_logs(csv_path)
 
     except Exception as e:
-        logger.error(f"Error logging signal to CSV: {e}")
+        logger.error(f"سگنل CSV میں لاگ کرنے میں خرابی: {e}")
 
-# Archive old logs to reduce file size
+# پرانے لاگز کو آرکائیو کریں
 def archive_old_logs(csv_path):
     try:
         if not os.path.exists(csv_path):
@@ -87,7 +86,7 @@ def archive_old_logs(csv_path):
         if df.empty:
             return
         
-        current_date = datetime.now(timezone.utc)
+        current_date = datetime.now(pytz.UTC)
         week_ago = current_date - pd.Timedelta(days=7)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         old_data = df[df['timestamp'].dt.date < week_ago.date()]
@@ -98,6 +97,6 @@ def archive_old_logs(csv_path):
             old_data.to_csv(archive_path, index=False)
             new_data = df[df['timestamp'].dt.date >= week_ago.date()]
             new_data.to_csv(csv_path, index=False)
-            logger.info(f"Archived {len(old_data)} old signals to {archive_path}")
+            logger.info(f"{len(old_data)} پرانے سگنلز {archive_path} میں آرکائیو")
     except Exception as e:
-        logger.error(f"Error archiving logs: {e}")
+        logger.error(f"لاگز آرکائیو کرنے میں خرابی: {e}")
