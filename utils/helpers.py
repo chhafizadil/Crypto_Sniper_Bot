@@ -1,31 +1,30 @@
-# Utility functions for data validation and agreement checks.
-# Changes:
-# - Added calculate_agreement function to support 2/3 timeframe agreement logic.
-# - Improved validation to handle edge cases.
+# ڈیٹا تصدیق اور ایگریمنٹ چیک کے لیے یوٹیلیٹی فنکشنز۔
+# تبدیلیاں:
+# - 2/4 ایگریمنٹ کے لیے calculate_agreement فنکشن اپ ڈیٹ کیا۔
 
 import pandas as pd
 from utils.logger import logger
 
-# Validate DataFrame for required columns and data quality
+# ڈیٹا فریم کی تصدیق
 def validate_dataframe(df: pd.DataFrame) -> bool:
     try:
         if df.empty or len(df) < 20:
-            logger.warning("DataFrame is empty or too short")
+            logger.warning("ڈیٹا فریم خالی یا بہت چھوٹا")
             return False
         required_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
         if not all(col in df.columns for col in required_columns):
-            logger.warning(f"Missing required columns: {required_columns}")
+            logger.warning(f"مطلوبہ کالم غائب: {required_columns}")
             return False
         if df[required_columns].isna().any().any():
-            logger.warning("NaN values in required columns")
+            logger.warning("مطلوبہ کالموں میں NaN اقدار")
             return False
-        logger.info("DataFrame validated successfully")
+        logger.info("ڈیٹا فریم کامیابی سے تصدیق شدہ")
         return True
     except Exception as e:
-        logger.error(f"Error validating DataFrame: {str(e)}")
+        logger.error(f"ڈیٹا فریم تصدیق میں خرابی: {str(e)}")
         return False
 
-# Calculate timeframe agreement for signals
+# ٹائم فریم ایگریمنٹ کا حساب
 def calculate_agreement(signals: list) -> tuple:
     try:
         if not signals:
@@ -37,8 +36,8 @@ def calculate_agreement(signals: list) -> tuple:
         most_common_direction = direction_counts.idxmax()
         agreement_count = direction_counts.get(most_common_direction, 0)
         agreement_ratio = agreement_count / len(directions)
-        logger.info(f"Agreement: {agreement_count}/{len(directions)} for {most_common_direction}")
+        logger.info(f"ایگریمنٹ: {agreement_count}/{len(directions)} for {most_common_direction}")
         return most_common_direction, agreement_ratio * 100
     except Exception as e:
-        logger.error(f"Error calculating agreement: {str(e)}")
+        logger.error(f"ایگریمنٹ حساب کرنے میں خرابی: {str(e)}")
         return None, 0
