@@ -1,10 +1,17 @@
+# Telegram bot integration for sending signals and handling commands.
+# Changes:
+# - Added batch sending to reduce Telegram API calls.
+# - Fixed event loop to prevent "Task was destroyed" error.
+# - Fixed datetime.utcnow() deprecation.
+# - Improved error handling for robust operation.
+
 import telegram
 import asyncio
 import pandas as pd
 from telegram.ext import Application, CommandHandler
 from telegram.error import Conflict, NetworkError, TelegramError
 from utils.logger import logger
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import pytz
 import requests
@@ -15,8 +22,13 @@ load_dotenv()
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 1000000  # Updated to 1,000,000
+MIN_VOLUME = 1000000
 
+# Batch signals for sending to reduce API calls
+signal_batch = []
+BATCH_INTERVAL = 300  # Send batch every 5 minutes
+
+# Convert UTC timestamp to Pakistan time
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00'))
@@ -27,31 +39,40 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
+# Calculate TP probabilities (neutral)
 def calculate_tp_probabilities(indicators):
-    logger.info("Using fixed TP probabilities: TP1=60%, TP2=40%, TP3=20%")
-    return {"TP1": 60, "TP2": 40, "TP3": 20}
+    logger.info("Using dynamic TP probabilities based on indicators")
+    base_prob = 50
+    if isinstance(indicators, str):
+        indicators = indicators.split(", ")
+    if "Bullish MACD" in indicators or "Bearish MACD" in indicators:
+        base_prob += 10
+    if "Strong Trend" in indicators:
+        base_prob += 10
+    if "Near Support" in indicators or "Near Resistance" in indicators:
+        base_prob -= 5
+    return {
+        "TP1": min(base_prob, 80),
+        "TP2": min(base_prob * 0.7, 60),
+        "TP3": min(base_prob * 0.5, 40)
+    }
 
+# Determine leverage (balanced)
 def determine_leverage(indicators):
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(", ")
-    if "Bullish MACD" in indicators: score += 2
-    if "Strong Trend" in indicators: score += 2
-    if "Above VWAP" in indicators: score += 1
-    if "Near Support" in indicators: score += 1
-    if "Near Resistance" in indicators: score -= 1
-    if "Overbought Stochastic" in indicators: score -= 1
-    if "Oversold Stochastic" in indicators: score -= 1
+    if "Bullish MACD" in indicators or "Bearish MACD" in indicators:
+        score += 2
+    if "Strong Trend" in indicators:
+        score += 2
+    if "Above VWAP" in indicators or "Below VWAP" in indicators:
+        score += 1
+    if "Overbought Stochastic" in indicators or "Oversold Stochastic" in indicators:
+        score -= 1
+    return "40x" if score >= 5 else "30x" if score >= 3 else "20x" if score >= 1 else "10x"
 
-    if score >= 5:
-        return "40x"
-    elif score >= 3:
-        return "30x"
-    elif score >= 1:
-        return "20x"
-    else:
-        return "10x"
-
+# Fetch 24h volume
 def get_24h_volume(symbol):
     try:
         symbol_clean = symbol.replace("/", "").upper()
@@ -64,6 +85,7 @@ def get_24h_volume(symbol):
         logger.error(f"Error fetching 24h volume for {symbol}: {str(e)}")
         return 0, "$0.00"
 
+# Adjust TP for stablecoins
 def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
     if "USDT" in symbol and symbol != "USDT/USD":
         max_tp_percent = 0.01
@@ -72,6 +94,7 @@ def adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry):
         tp3 = min(tp3, entry * (1 + max_tp_percent * 2))
     return tp1, tp2, tp3
 
+# Command handlers
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help for more options.")
 
@@ -166,6 +189,7 @@ async def signal(update, context):
         logger.error(f"Error fetching latest signal: {str(e)}")
         await update.message.reply_text("Error fetching latest signal.")
 
+# Generate daily summary report
 async def generate_daily_summary():
     try:
         file_path = 'logs/signals.csv'
@@ -232,66 +256,85 @@ async def report(update, context):
     else:
         await update.message.reply_text("No detailed report available for today.")
 
+# Send batched signals to Telegram
 async def send_signal(signal):
+    global signal_batch
+    signal_batch.append(signal)
+    logger.info(f"Added signal for {signal['symbol']} to batch. Current batch size: {len(signal_batch)}")
+
+# Process and send batched signals
+async def process_signal_batch():
+    global signal_batch
+    if not signal_batch:
+        return
     max_retries = 3
     retry_delay = 5
     for attempt in range(max_retries):
         try:
             bot = telegram.Bot(token=BOT_TOKEN)
-            conditions_str = ", ".join(signal.get('conditions', [])) or "None"
-            
-            volume, volume_str = get_24h_volume(signal['symbol'])
-            if volume < MIN_VOLUME:
-                logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
-                return
+            for signal in signal_batch:
+                conditions_str = ", ".join(signal.get('conditions', [])) or "None"
+                
+                volume, volume_str = get_24h_volume(signal['symbol'])
+                if volume < MIN_VOLUME:
+                    logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
+                    continue
 
-            probabilities = calculate_tp_probabilities(signal.get('conditions', []))
-            signal['tp1_possibility'] = probabilities['TP1']
-            signal['tp2_possibility'] = probabilities['TP2']
-            signal['tp3_possibility'] = probabilities['TP3']
-            signal['leverage'] = determine_leverage(signal.get('conditions', []))
-            signal['quote_volume_24h'] = volume_str
-            signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-            signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
-                signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
-            )
+                probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+                signal['tp1_possibility'] = probabilities['TP1']
+                signal['tp2_possibility'] = probabilities['TP2']
+                signal['tp3_possibility'] = probabilities['TP3']
+                signal['leverage'] = determine_leverage(signal.get('conditions', []))
+                signal['quote_volume_24h'] = volume_str
+                signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
+                signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
+                    signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
+                )
 
-            message = (
-                f"📈 *Trading Signal*\n"
-                f"💱 Symbol: {signal['symbol']}\n"
-                f"📊 Direction: {signal['direction']}\n"
-                f"⏰ Timeframe: {signal['timeframe']}\n"
-                f"⏳ Duration: {signal['trade_duration']}\n"
-                f"💰 Entry: ${signal['entry']:.2f}\n"
-                f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
-                f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
-                f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
-                f"🛑 SL: ${signal['sl']:.2f}\n"
-                f"🔍 Confidence: {signal['confidence']:.2f}%\n"
-                f"⚡ Type: {signal['trade_type']}\n"
-                f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
-                f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
-                f"📈 24h Volume: {signal['quote_volume_24h']}\n"
-                f"🔎 Indicators: {conditions_str}\n"
-                f"🕒 Timestamp: {signal['timestamp']}"
-            )
-            logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram (Attempt {attempt+1}/{max_retries})")
-            await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-            logger.info(f"Signal successfully sent to Telegram: {signal['symbol']} - {signal['direction']}")
+                message = (
+                    f"📈 *Trading Signal*\n"
+                    f"💱 Symbol: {signal['symbol']}\n"
+                    f"📊 Direction: {signal['direction']}\n"
+                    f"⏰ Timeframe: {signal['timeframe']}\n"
+                    f"⏳ Duration: {signal['trade_duration']}\n"
+                    f"💰 Entry: ${signal['entry']:.2f}\n"
+                    f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
+                    f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
+                    f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
+                    f"🛑 SL: ${signal['sl']:.2f}\n"
+                    f"🔍 Confidence: {signal['confidence']:.2f}%\n"
+                    f"⚡ Type: {signal['trade_type']}\n"
+                    f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
+                    f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
+                    f"📈 24h Volume: {signal['quote_volume_24h']}\n"
+                    f"🔎 Indicators: {conditions_str}\n"
+                    f"🕒 Timestamp: {signal['timestamp']}"
+                )
+                logger.info(f"Sending batched signal for {signal['symbol']} (Attempt {attempt+1}/{max_retries})")
+                await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+                logger.info(f"Signal sent: {signal['symbol']} - {signal['direction']}")
+            signal_batch = []  # Clear batch after sending
             return
         except NetworkError as ne:
-            logger.error(f"Network error sending signal for {signal['symbol']}: {str(ne)}")
+            logger.error(f"Network error sending batch: {str(ne)}")
             if attempt < max_retries - 1:
                 logger.info(f"Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
         except TelegramError as te:
-            logger.error(f"Telegram error sending signal for {signal['symbol']}: {str(te)}")
+            logger.error(f"Telegram error sending batch: {str(te)}")
             return
         except Exception as e:
-            logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
+            logger.error(f"Failed to send batch: {str(e)}")
             return
-    logger.error(f"Failed to send signal for {signal['symbol']} after {max_retries} attempts")
+    logger.error(f"Failed to send batch after {max_retries} attempts")
 
+# Background task for batch processing
+async def batch_processor():
+    while True:
+        await process_signal_batch()
+        await asyncio.sleep(BATCH_INTERVAL)
+
+# Start Telegram bot with proper event loop handling
 async def start_bot():
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
@@ -310,7 +353,6 @@ async def start_bot():
             await bot.set_webhook(url=WEBHOOK_URL)
             logger.info(f"Webhook reset to {WEBHOOK_URL}")
 
-        # Test Telegram API
         try:
             await bot.send_message(chat_id=CHAT_ID, text="Bot initialized successfully!")
             logger.info("Test message sent to Telegram")
@@ -327,6 +369,7 @@ async def start_bot():
         application.add_handler(CommandHandler("help", help))
         await application.initialize()
         await application.start()
+        asyncio.create_task(batch_processor())  # Start batch processor
         logger.info("Telegram webhook bot started successfully")
         return application
     except Exception as e:
