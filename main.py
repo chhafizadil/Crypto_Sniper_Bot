@@ -2,7 +2,7 @@ import asyncio
 import ccxt.async_support as ccxt
 import pandas as pd
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from datetime import datetime, timedelta
 from core.analysis import analyze_symbol_multi_timeframe
 from telebot.sender import send_signal, start_bot
@@ -13,14 +13,26 @@ app = FastAPI()
 
 @app.get("/")
 async def root():
-    return {"message": "Crypto Signal Bot is running. Use /health for status."}
+    return {"message": "Crypto Signal Bot is running. Use /health for status or /webhook for Telegram updates."}
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        logger.info(f"Telegram Update: {data}")
+        application = app.state.telegram_application
+        await application.process_update(data)
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        return {"ok": False}
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 100000
-MIN_CONFIDENCE = 60
+MIN_QUOTE_VOLUME = 100000  # Reduced from 500,000
+MIN_CONFIDENCE = 60  # Reduced from 65
 COOLDOWN_HOURS = 6
 
 cooldowns = {}
@@ -34,7 +46,7 @@ def save_signal_to_csv(signal):
             'tp1', 'tp2', 'tp3', 'sl', 'tp1_possibility', 'tp2_possibility',
             'tp3_possibility', 'volume', 'trade_type', 'trade_duration', 'timestamp',
             'status', 'hit_timestamp', 'quote_volume_24h', 'leverage', 'agreement',
-            'tp1_hit', 'tp2_hit', 'tp3_hit'
+            'tp1_hit', 'tp2_hit', 'tp3_hit'  # Added TP hit columns
         ]
         signal_dict = {col: signal.get(col, None) for col in required_columns}
         signal_dict['conditions'] = ', '.join(signal['conditions']) if isinstance(signal.get('conditions'), list) else signal.get('conditions', '')
@@ -89,14 +101,17 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 25:
+            if agreement < 25:  # Reduced from 50%
                 logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 25%")
                 return
+
+            # Volume check
             ticker = await exchange.fetch_ticker(symbol)
             quote_volume = ticker.get('quoteVolume', 0)
             if quote_volume < MIN_QUOTE_VOLUME:
                 logger.info(f"[{symbol}] Signal rejected: Quote volume ${quote_volume:,.2f} < ${MIN_QUOTE_VOLUME}")
                 return
+
             signal['timestamp'] = datetime.now().isoformat()
             signal['status'] = 'pending'
             signal['hit_timestamp'] = None
@@ -155,7 +170,7 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['15m', '1h', '4h', '1d']
+        timeframes = ['15m','1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
@@ -182,7 +197,9 @@ async def main_loop():
 async def startup_event():
     logger.info("Starting bot...")
     try:
-        await start_bot()  # Polling starts here
+        application = await start_bot()
+        app.state.telegram_application = application
+        logger.info("Telegram application stored in app state")
         await send_signals_from_csv()
         asyncio.create_task(main_loop())
     except Exception as e:
