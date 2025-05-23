@@ -31,8 +31,8 @@ async def telegram_webhook(request: Request):
 async def health_check():
     return {"status": "healthy"}
 
-MIN_QUOTE_VOLUME = 500000  # Set to 500,000 USD
-MIN_CONFIDENCE = 65
+MIN_QUOTE_VOLUME = 500000  # 500,000 USD
+MIN_CONFIDENCE = 60  # Lowered from 65 to allow more signals
 COOLDOWN_HOURS = 6
 
 cooldowns = {}
@@ -97,23 +97,17 @@ async def process_symbol(symbol, exchange, timeframes):
         signal = await analyze_symbol_multi_timeframe(symbol, exchange, timeframes)
         if signal and signal['confidence'] >= MIN_CONFIDENCE:
             signals, agreement = await multi_timeframe_boost(symbol, exchange, signal['direction'], timeframes)
-            if agreement < 50:  # 2/4 agreement (0.5 * 100)
-                logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 50%")
+            if agreement < 25:  # Relaxed to 1/4 agreement (25%)
+                logger.info(f"[{symbol}] Signal rejected: Agreement {agreement:.2f}% < 25%")
                 return
 
-            # Additional accuracy conditions
+            # Volume and price checks
             df = await exchange.fetch_ohlcv(symbol, signal['timeframe'], limit=50)
             df = pd.DataFrame(df, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             latest = df.iloc[-1]
             ticker = await exchange.fetch_ticker(symbol)
             if ticker['quoteVolume'] < MIN_QUOTE_VOLUME:
                 logger.info(f"[{symbol}] Signal rejected: Quote volume ${ticker['quoteVolume']:,.2f} < ${MIN_QUOTE_VOLUME}")
-                return
-            if signal['direction'] == 'LONG' and latest['close'] <= latest['open']:
-                logger.info(f"[{symbol}] Signal rejected: Close {latest['close']:.2f} <= Open {latest['open']:.2f}")
-                return
-            if signal['direction'] == 'SHORT' and latest['close'] >= latest['open']:
-                logger.info(f"[{symbol}] Signal rejected: Close {latest['close']:.2f} >= Open {latest['open']:.2f}")
                 return
 
             signal['timestamp'] = datetime.now().isoformat()
@@ -172,12 +166,12 @@ async def main_loop():
             'enableRateLimit': True
         })
         logger.info("Binance API connection successful")
-        timeframes = ['15m','1h', '4h', '1d']
+        timeframes = ['15m', '1h', '4h', '1d']
         while True:
             high_volume_symbols = await get_high_volume_symbols(exchange, MIN_QUOTE_VOLUME)
             logger.info(f"Selected {len(high_volume_symbols)} USDT pairs with volume >= ${MIN_QUOTE_VOLUME:,.0f}")
             if not high_volume_symbols:
-                logger.warning("No symbols passed volume filter. Retrying in 3600 seconds...")
+                logger.warning("No symbols passed volume filter. Retrying in 180 seconds...")
                 await asyncio.sleep(180)
                 continue
             batch_size = 1
