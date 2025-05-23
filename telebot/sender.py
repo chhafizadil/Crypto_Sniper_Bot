@@ -15,8 +15,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 500000  # 500,000 USD
-MIN_AGREEMENT = 1  # Relaxed to 1/4 for more signals
+MIN_VOLUME = 100000  # Reduced from 500,000
+MIN_AGREEMENT = 0.5  # Reduced to 0.5/4
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -28,29 +28,10 @@ def format_timestamp_to_pk(utc_timestamp_str):
         logger.error(f"Error converting timestamp: {str(e)}")
         return utc_timestamp_str
 
-def calculate_tp_probabilities(indicators, historical_data=None):
-    score = 0
-    if isinstance(indicators, str):
-        indicators = indicators.split(", ")
-    if "Bullish MACD" in indicators: score += 2
-    if "Strong Trend" in indicators: score += 2
-    if "Overbought Stochastic" in indicators: score += 1
-    if "Oversold Stochastic" in indicators: score += 1
-    if "Above VWAP" in indicators: score += 1
-    if "Hammer" in indicators: score += 1
-    if "Near Support" in indicators: score += 2
-    if "Near Resistance" in indicators: score -= 1
-
-    if historical_data is None:
-        if score >= 7:
-            return {"TP1": 90, "TP2": 70, "TP3": 50}
-        elif score >= 5:
-            return {"TP1": 76, "TP2": 54, "TP3": 38}
-        else:
-            return {"TP1": 60, "TP2": 40, "TP3": 20}
-    else:
-        logger.info("Historical data TP probability calculation not implemented")
-        return {"TP1": 60, "TP2": 40, "TP3": 20}
+def calculate_tp_probabilities(indicators):
+    # Historical data option removed as per user request
+    logger.info("Using fixed TP probabilities: TP1=60%, TP2=40%, TP3=20%")
+    return {"TP1": 60, "TP2": 40, "TP3": 20}
 
 def determine_leverage(indicators):
     score = 0
@@ -135,7 +116,7 @@ async def status(update, context):
 
 async def signal(update, context):
     try:
-        file_path = 'logs/signals.csv'  # Updated to match main.py
+        file_path = 'logs/signals.csv'
         if not os.path.exists(file_path):
             await update.message.reply_text("No signals available.")
             return
@@ -146,7 +127,6 @@ async def signal(update, context):
         latest_signal = df.iloc[-1].to_dict()
         conditions_str = ", ".join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(", "))
         
-        # Validate volume and agreement
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
         agreement = latest_signal.get('agreement', 0) / 100 * 4
         if volume < MIN_VOLUME:
@@ -158,7 +138,6 @@ async def signal(update, context):
             await update.message.reply_text("Insufficient timeframe agreement for signal.")
             return
 
-        # Update dynamic fields
         probabilities = calculate_tp_probabilities(latest_signal['conditions'])
         latest_signal['tp1_possibility'] = probabilities['TP1']
         latest_signal['tp2_possibility'] = probabilities['TP2']
@@ -196,7 +175,7 @@ async def signal(update, context):
 
 async def generate_daily_summary():
     try:
-        file_path = 'logs/signals.csv'  # Updated to match main.py
+        file_path = 'logs/signals.csv'
         if not os.path.exists(file_path):
             logger.warning("Signals log file not found")
             return None
@@ -208,7 +187,7 @@ async def generate_daily_summary():
             logger.info("No signals found for today")
             return None
         total_signals = len(df_today)
-        long_signals = len(df_today[df_today['direction'] == 'LONG'])  # Updated to match direction case
+        long_signals = len(df_today[df_today['direction'] == 'LONG'])
         short_signals = len(df_today[df_today['direction'] == 'SHORT'])
         successful_signals = len(df_today[df_today['status'] == 'successful'])
         failed_signals = len(df_today[df_today['status'] == 'failed'])
@@ -261,72 +240,78 @@ async def report(update, context):
         await update.message.reply_text("No detailed report available for today.")
 
 async def send_signal(signal):
-    try:
-        bot = telegram.Bot(token=BOT_TOKEN)
-        conditions_str = ", ".join(signal.get('conditions', [])) or "None"
-        
-        # Validate volume and agreement
-        volume, volume_str = get_24h_volume(signal['symbol'])
-        agreement = signal.get('agreement', 0) / 100 * 4
-        if volume < MIN_VOLUME:
-            logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
-            return
-        if agreement < MIN_AGREEMENT:
-            logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/4")
-            return
+    max_retries = 3
+    retry_delay = 5
+    for attempt in range(max_retries):
+        try:
+            bot = telegram.Bot(token=BOT_TOKEN)
+            conditions_str = ", ".join(signal.get('conditions', [])) or "None"
+            
+            volume, volume_str = get_24h_volume(signal['symbol'])
+            agreement = signal.get('agreement', 0) / 100 * 4
+            if volume < MIN_VOLUME:
+                logger.warning(f"Low volume for {signal['symbol']}: {volume_str}")
+                return
+            if agreement < MIN_AGREEMENT:
+                logger.warning(f"Insufficient timeframe agreement for {signal['symbol']}: {agreement}/4")
+                return
 
-        # Update dynamic fields
-        probabilities = calculate_tp_probabilities(signal.get('conditions', []))
-        signal['tp1_possibility'] = probabilities['TP1']
-        signal['tp2_possibility'] = probabilities['TP2']
-        signal['tp3_possibility'] = probabilities['TP3']
-        signal['leverage'] = determine_leverage(signal.get('conditions', []))
-        signal['quote_volume_24h'] = volume_str
-        signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
-        signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
-            signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
-        )
+            probabilities = calculate_tp_probabilities(signal.get('conditions', []))
+            signal['tp1_possibility'] = probabilities['TP1']
+            signal['tp2_possibility'] = probabilities['TP2']
+            signal['tp3_possibility'] = probabilities['TP3']
+            signal['leverage'] = determine_leverage(signal.get('conditions', []))
+            signal['quote_volume_24h'] = volume_str
+            signal['timestamp'] = format_timestamp_to_pk(signal['timestamp'])
+            signal['tp1'], signal['tp2'], signal['tp3'] = adjust_tp_for_stablecoin(
+                signal['symbol'], signal['tp1'], signal['tp2'], signal['tp3'], signal['entry']
+            )
 
-        message = (
-            f"📈 *Trading Signal*\n"
-            f"💱 Symbol: {signal['symbol']}\n"
-            f"📊 Direction: {signal['direction']}\n"
-            f"⏰ Timeframe: {signal['timeframe']}\n"
-            f"⏳ Duration: {signal['trade_duration']}\n"
-            f"💰 Entry: ${signal['entry']:.2f}\n"
-            f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
-            f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
-            f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
-            f"🛑 SL: ${signal['sl']:.2f}\n"
-            f"🔍 Confidence: {signal['confidence']:.2f}%\n"
-            f"⚡ Type: {signal['trade_type']}\n"
-            f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
-            f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
-            f"📈 24h Volume: {signal['quote_volume_24h']}\n"
-            f"🔎 Indicators: {conditions_str}\n"
-            f"🕒 Timestamp: {signal['timestamp']}"
-        )
-        logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram")
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-        logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
-    except NetworkError as ne:
-        logger.error(f"Network error sending signal for {signal['symbol']}: {str(ne)}")
-    except TelegramError as te:
-        logger.error(f"Telegram error sending signal for {signal['symbol']}: {str(te)}")
-    except Exception as e:
-        logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
+            message = (
+                f"📈 *Trading Signal*\n"
+                f"💱 Symbol: {signal['symbol']}\n"
+                f"📊 Direction: {signal['direction']}\n"
+                f"⏰ Timeframe: {signal['timeframe']}\n"
+                f"⏳ Duration: {signal['trade_duration']}\n"
+                f"💰 Entry: ${signal['entry']:.2f}\n"
+                f"🎯 TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
+                f"🎯 TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
+                f"🎯 TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
+                f"🛑 SL: ${signal['sl']:.2f}\n"
+                f"🔍 Confidence: {signal['confidence']:.2f}%\n"
+                f"⚡ Type: {signal['trade_type']}\n"
+                f"⚖ Leverage: {signal.get('leverage', 'N/A')}\n"
+                f"📈 Combined Candle Volume: ${signal['volume']:,.2f}\n"
+                f"📈 24h Volume: {signal['quote_volume_24h']}\n"
+                f"🔎 Indicators: {conditions_str}\n"
+                f"🕒 Timestamp: {signal['timestamp']}"
+            )
+            logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram (Attempt {attempt+1}/{max_retries})")
+            await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
+            logger.info(f"Signal sent to Telegram: {signal['symbol']} - {signal['direction']}")
+            return
+        except NetworkError as ne:
+            logger.error(f"Network error sending signal for {signal['symbol']}: {str(ne)}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+        except TelegramError as te:
+            logger.error(f"Telegram error sending signal for {signal['symbol']}: {str(te)}")
+            return
+        except Exception as e:
+            logger.error(f"Failed to send signal for {signal['symbol']}: {str(e)}")
+            return
+    logger.error(f"Failed to send signal for {signal['symbol']} after {max_retries} attempts")
 
 async def start_bot():
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
-        # Check and delete existing webhook
         try:
             await bot.delete_webhook(drop_pending_updates=True)
             logger.info("Telegram webhook deleted successfully")
         except Exception as e:
             logger.warning(f"Error deleting webhook: {str(e)}")
         
-        # Set new webhook
         try:
             await bot.set_webhook(url=WEBHOOK_URL)
             logger.info(f"Webhook set to {WEBHOOK_URL}")
