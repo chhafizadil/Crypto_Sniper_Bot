@@ -135,3 +135,27 @@ def is_three_black_crows(df):
     except Exception as e:
         logger.error(f"Error in is_three_black_crows: {str(e)}")
         return [False] * len(df)
+
+def detect_candle_patterns(df: pd.DataFrame) -> list:
+    """Detect all candle patterns in the DataFrame and return a list of patterns."""
+    try:
+        patterns = []
+        if is_bullish_engulfing(df).iloc[-1]:
+            patterns.append('bullish_engulfing')
+        if is_bearish_engulfing(df).iloc[-1]:
+            patterns.append('bearish_engulfing')
+        if is_doji(df).iloc[-1]:
+            patterns.append('doji')
+        if is_hammer(df).iloc[-1]:
+            patterns.append('hammer')
+        if is_shooting_star(df).iloc[-1]:
+            patterns.append('shooting_star')
+        if is_three_white_soldiers(df).iloc[-1]:
+            patterns.append('three_white_soldiers')
+        if is_three_black_crows(df).iloc[-1]:
+            patterns.append('three_black_crows')
+        logger.info(f"Candle patterns detected: {patterns if patterns else 'None'}")
+        return patterns
+    except Exception as e:
+        logger.error(f"Error in detect_candle_patterns: {str(e)}")
+        return []
