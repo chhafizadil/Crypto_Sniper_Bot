@@ -1,5 +1,10 @@
 from datetime import datetime
 import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 def get_timestamp() -> float:
     """Get current timestamp in seconds."""
@@ -11,7 +16,7 @@ def format_timestamp(timestamp: float) -> str:
         dt = datetime.fromtimestamp(timestamp)
         return dt.isoformat()
     except Exception as e:
-        # Fallback for invalid timestamp
+        logger.error(f"Error formatting timestamp: {str(e)}")
         return datetime.now().isoformat()
 
 def parse_timestamp(timestamp_str: str) -> float:
@@ -26,6 +31,5 @@ def parse_timestamp(timestamp_str: str) -> float:
             dt = datetime.strptime(timestamp_str, '%d %b %Y, %I:%M %p')
             return dt.timestamp()
         except ValueError as e:
-            # Fallback to current time
             logger.error(f"Invalid timestamp format: {timestamp_str}, using current time")
             return time.time()
