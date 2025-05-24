@@ -1,198 +1,122 @@
-# Core engine for signal generation and Telegram notifications.
-# Changes:
-# - Removed Urdu from all logs and comments.
-# - Added scanning logic to prevent re-scanning until all USDT pairs are scanned.
-# - Implemented 4-hour cooldown for signaled symbols.
-# - Updated volume filter to $1,000,000.
-# - Enforced 2/4 timeframe agreement.
-# - Integrated dynamic TP logic from sender.py.
-# - Removed gunicorn, using webhook-compatible Telegram bot.
-# - Added PKT timestamp handling.
-
 import asyncio
 import ccxt.async_support as ccxt
-from core.analysis import analyze_symbol_multi_timeframe
-from utils.logger import logger, log_signal_to_csv
-from utils.helpers import format_timestamp_to_pk
-import pandas as pd
-import psutil
-from telegram import Bot
-import os
-from datetime import datetime, timedelta
-import pytz
-from dotenv import load_dotenv
+from typing import Dict, List, Set
+from core.indicators import calculate_indicators
+from core.multi_timeframe import multi_timeframe_analysis
+from model.predictor import predict_signal
+from telebot.sender import send_signal
+from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
+from core.utils import get_timestamp
+import logging
 
-logger.info("[Engine] File loaded: core/engine.py")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Set to track scanned symbols in a cycle
+scanned_symbols: Set[str] = set()
+# Dictionary to track last signal time for each symbol
+last_signal_time: Dict[str, float] = {}
+# Batch size for processing symbols
+BATCH_SIZE = 20
+# Cooldown period (4 hours in seconds)
+COOLDOWN = 4 * 3600
+# Cycle interval (10 minutes in seconds)
+CYCLE_INTERVAL = 600
 
-# Core engine to run signal generation and notifications
-async def run_engine():
-    logger.info("[Engine] Starting run_engine")
+async def fetch_usdt_pairs(exchange: ccxt.binance) -> List[str]:
+    """Fetch all USDT trading pairs."""
+    markets = await exchange.load_markets()
+    usdt_pairs = [symbol for symbol in markets if symbol.endswith('USDT')]
+    logger.info(f"Found {len(usdt_pairs)} USDT pairs")
+    return usdt_pairs
 
-    # Check for existing process
-    pid_file = "bot.pid"
-    if os.path.exists(pid_file):
-        with open(pid_file, 'r') as f:
-            old_pid = int(f.read().strip())
-        try:
-            os.kill(old_pid, 0)
-            logger.error("[Engine] Another bot instance is running. Exiting.")
-            return
-        except OSError:
-            pass
-    with open(pid_file, 'w') as f:
-        f.write(str(os.getpid()))
-
+async def process_symbol(exchange: ccxt.binance, symbol: str) -> None:
+    """Process a single symbol for signal generation."""
     try:
-        # Validate environment variables
-        required_vars = ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "BINANCE_API_KEY", "BINANCE_API_SECRET"]
-        for var in required_vars:
-            if not os.getenv(var):
-                logger.error(f"[Engine] Missing environment variable: {var}")
-                return
-
-        # Ensure logs directory exists
-        logs_dir = "logs"
-        if not os.path.exists(logs_dir):
-            logger.info(f"[Engine] Created logs directory: {logs_dir}")
-            os.makedirs(logs_dir)
-
-        # Initialize Telegram bot
-        logger.info("[Engine] Initializing Telegram bot")
-        try:
-            bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
-            logger.info("[Engine] Telegram bot initialized")
-        except Exception as e:
-            logger.error(f"[Engine] Error initializing Telegram bot: {str(e)}")
+        # Fetch ticker for volume check
+        ticker = await exchange.fetch_ticker(symbol)
+        volume_usd = ticker['quoteVolume']
+        if volume_usd < 1_000_000:
+            logger.info(f"Rejecting {symbol}: Low volume (${volume_usd:.2f} < $1,000,000)")
             return
 
-        # Initialize Binance exchange
-        logger.info("[Engine] Initializing Binance exchange")
-        try:
-            exchange = ccxt.binance({
-                "enableRateLimit": True,
-                "apiKey": os.getenv("BINANCE_API_KEY"),
-                "secret": os.getenv("BINANCE_API_SECRET")
-            })
-            logger.info("[Engine] Binance exchange initialized")
-        except Exception as e:
-            logger.error(f"[Engine] Error initializing Binance exchange: {str(e)}")
+        # Fetch OHLCV data for multiple timeframes
+        timeframes = ['15m', '1h', '4h', '1d']
+        ohlcv_data = {}
+        for tf in timeframes:
+            ohlcv = await exchange.fetch_ohlcv(symbol, tf, limit=100)
+            ohlcv_data[tf] = ohlcv
+
+        # Calculate indicators
+        indicators = calculate_indicators(ohlcv_data)
+
+        # Perform multi-timeframe analysis
+        analysis_result = multi_timeframe_analysis(indicators, ohlcv_data)
+
+        # Check agreement (75% threshold)
+        if analysis_result['agreement'] < 75:
+            logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result['agreement']} < 75%)")
             return
 
-        # Load USDT pairs
-        logger.info("[Engine] Loading markets")
-        try:
-            markets = await exchange.load_markets()
-            symbols = [s for s in markets.keys() if s.endswith("/USDT")]
-            logger.info(f"[Engine] Found {len(symbols)} USDT pairs")
-        except Exception as e:
-            logger.error(f"[Engine] Error loading markets: {str(e)}")
+        # Predict signal
+        signal = predict_signal(ohlcv_data, indicators, analysis_result)
+        if not signal:
+            logger.info(f"No signal for {symbol}")
             return
 
-        # Track scanned symbols and signal times
-        scanned_symbols = set()
-        last_signal_time = {}
+        # Check for duplicate TP/SL values
+        if signal['tp1'] == signal['tp2'] == signal['tp3'] == signal['entry']:
+            logger.info(f"Rejecting {symbol}: Identical entry and TP values")
+            return
 
-        # Main scanning loop
-        while True:
-            for symbol in symbols:
-                # Skip if symbol was recently signaled (4-hour cooldown)
-                current_time = datetime.now(pytz.UTC)
-                if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < 4 * 3600:
-                    logger.info(f"[Engine] [{symbol}] On cooldown")
-                    continue
+        # Check cooldown
+        current_time = get_timestamp()
+        if symbol in last_signal_time and (current_time - last_signal_time[symbol]) < COOLDOWN:
+            logger.info(f"Rejecting {symbol}: In cooldown")
+            return
 
-                # Skip if symbol was scanned in this cycle
-                if symbol in scanned_symbols:
-                    continue
-
-                memory_before = psutil.Process().memory_info().rss / 1024 / 1024
-                cpu_percent = psutil.cpu_percent(interval=0.1)
-                logger.info(f"[Engine] [{symbol}] Before analysis - Memory: {memory_before:.2f} MB, CPU: {cpu_percent:.1f}%")
-
-                # Volume check
-                try:
-                    ticker = await exchange.fetch_ticker(symbol)
-                    quote_volume_24h = ticker.get('quoteVolume', 0)
-                    base_volume = ticker.get('baseVolume', 0)
-                    last_price = ticker.get('last', 0)
-                    if quote_volume_24h == 0 and base_volume > 0 and last_price > 0:
-                        quote_volume_24h = base_volume * last_price
-                    if quote_volume_24h < 1000000:
-                        logger.info(f"[Engine] [{symbol}] Rejected: Low volume (${quote_volume_24h:,.2f} < $1,000,000)")
-                        scanned_symbols.add(symbol)
-                        continue
-                except Exception as e:
-                    logger.error(f"[Engine] [{symbol}] Error fetching ticker: {str(e)}")
-                    scanned_symbols.add(symbol)
-                    continue
-
-                # Analyze symbol
-                logger.info(f"[Engine] [{symbol}] Analyzing symbol")
-                try:
-                    signal = await analyze_symbol_multi_timeframe(symbol, exchange, ['15m', '1h', '4h', '1d'])
-                    if signal and signal["confidence"] >= 60 and signal["tp1_possibility"] >= 60:
-                        # Format message for Telegram
-                        message = (
-                            f"🚨 Trading Signal: {signal['symbol']}\n"
-                            f"Timeframe: {signal['timeframe']}\n"
-                            f"Direction: {signal['direction']}\n"
-                            f"Entry: ${signal['entry']:.2f}\n"
-                            f"Confidence: {signal['confidence']:.2f}%\n"
-                            f"TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)\n"
-                            f"TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.2f}%)\n"
-                            f"TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.2f}%)\n"
-                            f"SL: ${signal['sl']:.2f}\n"
-                            f"Trade Type: {signal['trade_type']}\n"
-                            f"Conditions: {', '.join(signal['conditions'])}\n"
-                            f"Agreement: {signal['agreement']:.2f}%\n"
-                            f"Timestamp: {format_timestamp_to_pk(signal['timestamp'])}"
-                        )
-                        logger.info(f"[Engine] [{symbol}] Signal generated, sending to Telegram")
-                        try:
-                            await bot.send_message(chat_id=os.getenv("TELEGRAM_CHAT_ID"), text=message, parse_mode='Markdown')
-                            logger.info(f"[Engine] [{symbol}] Signal sent: {signal['direction']}, Confidence: {signal['confidence']:.2f}%")
-                            last_signal_time[symbol] = datetime.now(pytz.UTC)
-                        except Exception as e:
-                            logger.error(f"[Engine] [{symbol}] Error sending Telegram message: {str(e)}")
-
-                        # Log signal to CSV
-                        logger.info(f"[Engine] [{symbol}] Saving signal to CSV")
-                        log_signal_to_csv(signal)
-                        logger.info(f"[Engine] [{symbol}] Signal saved to CSV")
-                    else:
-                        logger.info(f"[Engine] [{symbol}] No valid signal (Confidence: {signal['confidence'] if signal else 'None'}%)")
-                except Exception as e:
-                    logger.error(f"[Engine] [{symbol}] Error analyzing symbol: {str(e)}")
-
-                # Mark symbol as scanned
-                scanned_symbols.add(symbol)
-
-                memory_after = psutil.Process().memory_info().rss / 1024 / 1024
-                cpu_percent_after = psutil.cpu_percent(interval=0.1)
-                memory_diff = memory_after - memory_before
-                logger.info(f"[Engine] [{symbol}] After analysis - Memory: {memory_after:.2f} MB (Change: {memory_diff:.2f} MB), CPU: {cpu_percent_after:.1f}%")
-
-            # Reset scanned symbols after full cycle
-            if len(scanned_symbols) == len(symbols):
-                logger.info("[Engine] Completed scan cycle, resetting scanned symbols")
-                scanned_symbols.clear()
-
-            # Wait before next cycle
-            await asyncio.sleep(60)
+        # Send signal to Telegram
+        await send_signal(symbol, signal, TELEGRAM_CHAT_ID)
+        last_signal_time[symbol] = current_time
+        logger.info(f"Signal sent successfully: {symbol} - {signal['direction']} ✔")
 
     except Exception as e:
-        logger.error(f"[Engine] Unexpected error in run_engine: {str(e)}")
-    finally:
-        # Close exchange
-        logger.info("[Engine] Closing exchange")
-        try:
-            await exchange.close()
-            logger.info("[Engine] Exchange closed")
-        except Exception as e:
-            logger.error(f"[Engine] Error closing exchange: {str(e)}")
+        logger.error(f"Error processing {symbol}: {str(e)}")
 
-        # Remove PID file
-        if os.path.exists(pid_file):
-            os.remove(pid_file)
+async def main():
+    """Main loop to process USDT pairs in batches."""
+    exchange = ccxt.binance({
+        'apiKey': API_KEY,
+        'secret': API_SECRET,
+        'enableRateLimit': True,
+    })
+
+    while True:
+        try:
+            # Fetch USDT pairs
+            usdt_pairs = await fetch_usdt_pairs(exchange)
+
+            # Process symbols in batches
+            for i in range(0, len(usdt_pairs), BATCH_SIZE):
+                batch = usdt_pairs[i:i + BATCH_SIZE]
+                tasks = [process_symbol(exchange, symbol) for symbol in batch if symbol not in scanned_symbols]
+                await asyncio.gather(*tasks)
+                scanned_symbols.update(batch)
+
+            # Clear scanned symbols after full cycle
+            if len(scanned_symbols) >= len(usdt_pairs):
+                scanned_symbols.clear()
+                logger.info("Completed full cycle, resetting scanned symbols")
+
+            # Wait for next cycle (10 minutes)
+            await asyncio.sleep(CYCLE_INTERVAL)
+
+        except Exception as e:
+            logger.error(f"Main loop error: {str(e)}")
+            await asyncio.sleep(60)
+
+    await exchange.close()
+
+if __name__ == "__main__":
+    asyncio.run(main())
