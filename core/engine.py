@@ -157,7 +157,6 @@ async def main():
 
             # Clear scanned symbols after full cycle
             if len(scanned_symbols) >= len(usdt_pairs):
-                # Keep symbols in cooldown
                 current_time = get_timestamp()
                 scanned_symbols = {s for s in scanned_symbols if s in last_signal_time and (current_time - last_signal_time[s]) < COOLDOWN}
                 logger.info("Completed full cycle, retaining cooldown symbols")
