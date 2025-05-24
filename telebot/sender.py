@@ -23,9 +23,9 @@ async def send_signal(symbol: str, signal: Dict, chat_id: str) -> None:
     message = (
         f"📊 *{symbol} - {signal['direction']}*\n"
         f"Entry: ${signal['entry']:.2f}\n"
-        f"TP1: ${signal['tp1']:.2f} ({signal['tp1_prob']:.1f}%)\n"
-        f"TP2: ${signal['tp2']:.2f} ({signal['tp2_prob']:.1f}%)\n"
-        f"TP3: ${signal['tp3']:.2f} ({signal['tp3_prob']:.1f}%)\n"
+        f"TP1: ${signal['tp1']:.2f} ({signal['tp1_possibility']:.1f}%)\n"
+        f"TP2: ${signal['tp2']:.2f} ({signal['tp2_possibility']:.1f}%)\n"
+        f"TP3: ${signal['tp3']:.2f} ({signal['tp3_possibility']:.1f}%)\n"
         f"SL: ${signal['sl']:.2f}\n"
         f"Leverage: {signal['leverage']}x\n"
         f"Confidence: {signal['confidence']:.1f}%\n"
