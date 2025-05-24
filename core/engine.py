@@ -3,7 +3,7 @@ import ccxt.async_support as ccxt
 from typing import Dict, List, Set
 from core.indicators import calculate_indicators
 from core.multi_timeframe import multi_timeframe_analysis
-from model.predictor import predict_signal
+from model.predictor import SignalPredictor  # Updated import
 from telebot.sender import send_signal
 from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
 from core.utils import get_timestamp
@@ -77,8 +77,9 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
             logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result['agreement']} < 85%)")
             return None
 
-        # Predict signal
-        signal = predict_signal(ohlcv_data, indicators, analysis_result)
+        # Predict signal using SignalPredictor
+        predictor = SignalPredictor()  # Create instance
+        signal = await predictor.predict_signal(symbol, ohlcv_data['15m'], '15m')  # Use instance method
         if not signal or signal['confidence'] < 70.0:  # Updated confidence threshold
             logger.info(f"No signal or low confidence for {symbol}")
             return None
