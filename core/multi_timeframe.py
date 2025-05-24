@@ -17,9 +17,9 @@ def multi_timeframe_analysis(indicators: Dict, ohlcv_data: Dict) -> Dict:
 
         # Determine signal direction
         direction = None
-        if rsi[-1] > 70 and macd['signal'][-1] > macd['macd'][-1]:
+        if rsi[-1] > 75 and macd['signal'][-1] > macd['macd'][-1]:  # Updated RSI threshold
             direction = 'SHORT'
-        elif rsi[-1] < 30 and macd['signal'][-1] < macd['macd'][-1]:
+        elif rsi[-1] < 25 and macd['signal'][-1] < macd['macd'][-1]:  # Updated RSI threshold
             direction = 'LONG'
         elif any(p in ['bullish_engulfing', 'hammer'] for p in candle_patterns):
             direction = 'LONG'
