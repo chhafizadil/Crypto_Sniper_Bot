@@ -5,13 +5,15 @@ from config.settings import TELEGRAM_BOT_TOKEN
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Maximum retries for sending a signal
-MAX_RETRIES = 3
+MAX_RETRIES = 5  # Increased retries
 # Base delay for retries (in seconds)
-BASE_RETRY_DELAY = 5
+BASE_RETRY_DELAY = 10  # Increased delay
+# Timeout for HTTP requests (in seconds)
+TIMEOUT = 30
 
 async def send_signal(symbol: str, signal: Dict, chat_id: str) -> None:
     """Send trading signal to Telegram with flood control handling."""
@@ -32,8 +34,9 @@ async def send_signal(symbol: str, signal: Dict, chat_id: str) -> None:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            await bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown')
+            await bot.send_message(chat_id=chat_id, text=message, parse_mode='Markdown', timeout=TIMEOUT)
             logger.info(f"Signal sent successfully: {symbol} - {signal['direction']} ✔")
+            await asyncio.sleep(3)  # 3 seconds delay between signals
             return
 
         except telegram.error.RateLimited as e:
