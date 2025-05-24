@@ -1,9 +1,9 @@
 # Main script for Telegram bot integration to send trading signals and handle commands.
 # Changes:
 # - Added scanned_symbols set to prevent re-scanning until all Binance coins are scanned.
-# - Implemented 4-hour cooldown for symbols with sent signals.
-# - Made TP1, TP2, TP3 dynamic based on indicators and market conditions.
-# - Removed gunicorn, running bot solely via webhook.
+# - Implemented 6-hour cooldown for symbols with sent signals (increased from 4 hours).
+# - Integrated with core/engine.py for real market-based signal generation.
+# - Added delays and signal limits to prevent flood control.
 # - All logging and comments in English.
 # - Fixed timestamp parsing issue.
 
@@ -19,17 +19,38 @@ import pytz
 import requests
 from dotenv import load_dotenv
 import numpy as np
+import json
+from core.engine import process_symbol, fetch_usdt_pairs
+from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
+import ccxt.async_support as ccxt
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
-MIN_VOLUME = 1000000
+MIN_VOLUME = 2_000_000  # Updated to 2 million USD
+MAX_SIGNALS_PER_MINUTE = 1  # Limit to 1 signal per minute
+CYCLE_INTERVAL = 1200  # 20 minutes in seconds
+BATCH_SIZE = 20  # Process 20 coins per batch
+COOLDOWN = 6 * 3600  # 6 hours in seconds
+SIGNAL_TIME_FILE = "last_signal_times.json"
 
 # Track scanned symbols and last signal times
 scanned_symbols = set()
 last_signal_time = {}
+
+def load_signal_times():
+    """Load last signal times from JSON file."""
+    if os.path.exists(SIGNAL_TIME_FILE):
+        with open(SIGNAL_TIME_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_signal_times():
+    """Save last signal times to JSON file."""
+    with open(SIGNAL_TIME_FILE, 'w') as f:
+        json.dump({k: v.isoformat() for k, v in last_signal_time.items()}, f)
 
 # Convert UTC timestamp to Pakistan time
 def format_timestamp_to_pk(utc_timestamp_str):
@@ -284,8 +305,8 @@ async def report(update, context):
 
 # Send trading signal to Telegram
 async def send_signal(signal):
-    max_retries = 3
-    retry_delay = 5
+    max_retries = 5  # Increased retries
+    retry_delay = 10  # Increased delay
     for attempt in range(max_retries):
         try:
             bot = telegram.Bot(token=BOT_TOKEN)
@@ -331,8 +352,9 @@ async def send_signal(signal):
             )
             logger.info(f"Attempting to send signal for {signal['symbol']} to Telegram (attempt {attempt+1}/{max_retries})")
             await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='Markdown')
-            logger.info(f"Signal sent successfully: {signal['symbol']} - {signal['direction']}")
+            logger.info(f"Signal sent successfully: {signal['symbol']} - {signal['direction']} ✔")
             last_signal_time[signal['symbol']] = datetime.now(pytz.UTC)  # Record signal time
+            await asyncio.sleep(3)  # 3 seconds delay between signals
             return
         except NetworkError as ne:
             logger.error(f"Network error for {signal['symbol']}: {str(ne)}")
@@ -348,46 +370,28 @@ async def send_signal(signal):
     logger.error(f"Signal failed for {signal['symbol']} after {max_retries} attempts")
 
 # Process signal for a symbol
-async def process_signal(symbol):
+async def process_signal(symbol, exchange):
     try:
         # Skip if symbol was recently signaled
         current_time = datetime.now(pytz.UTC)
-        if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < 4 * 3600:
-            logger.info(f"Skipping {symbol}: Signal sent within last 4 hours")
+        if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < COOLDOWN:
+            logger.info(f"Skipping {symbol}: Signal sent within last 6 hours")
             return None
 
-        # Fetch OHLCV data (simplified for example)
+        # Fetch volume
         volume, volume_str = get_24h_volume(symbol)
         if volume < MIN_VOLUME:
             logger.info(f"Rejecting {symbol}: Low volume ({volume_str} < ${MIN_VOLUME:,})")
             return None
 
-        # Simulated signal generation (replace with actual logic)
-        signal = {
-            'symbol': symbol,
-            'direction': 'LONG',
-            'entry': 1000.0,
-            'confidence': 75.0,
-            'timeframe': '4h',
-            'conditions': ['Strong Trend', 'Above VWAP', 'Near Support'],
-            'sl': 950.0,
-            'volume': 5000.0,
-            'trade_type': 'Scalping',
-            'trade_duration': 'Up to 24 hours',
-            'timestamp': datetime.now(pytz.UTC).isoformat() + 'Z',
-            'atr': 0.01
-        }
+        # Generate signal using core/engine.py
+        signal_data = await process_symbol(exchange, symbol)
+        if not signal_data:
+            logger.info(f"No signal generated for {symbol}")
+            return None
 
-        # Generate dynamic TPs
-        probabilities, prices = calculate_tp_probabilities_and_prices(signal['conditions'], signal['entry'], signal['atr'])
-        signal.update({
-            'tp1': prices['TP1'],
-            'tp2': prices['TP2'],
-            'tp3': prices['TP3'],
-            'tp1_possibility': probabilities['TP1'],
-            'tp2_possibility': probabilities['TP2'],
-            'tp3_possibility': probabilities['TP3']
-        })
+        signal = signal_data['signal']
+        signal['quote_volume_24h'] = volume_str
 
         # Save signal to CSV
         df = pd.DataFrame([signal])
@@ -441,19 +445,67 @@ async def start_bot():
         await application.start()
         logger.info("Telegram webhook bot started successfully")
 
+        # Initialize exchange
+        exchange = ccxt.binance({
+            'apiKey': API_KEY,
+            'secret': API_SECRET,
+            'enableRateLimit': True,
+        })
+
+        # Load last signal times
+        global last_signal_time
+        last_signal_time = {k: datetime.fromisoformat(v) for k, v in load_signal_times().items()}
+
+        signal_count = 0
+        last_signal_minute = (datetime.now(pytz.UTC).timestamp() // 60)
+
         # Start scanning loop
-        symbols = get_usdt_pairs()
         while True:
-            for symbol in symbols:
-                if symbol in scanned_symbols:
-                    continue
-                logger.info(f"Processing {symbol}")
-                await process_signal(symbol)
-                scanned_symbols.add(symbol)
-            if len(scanned_symbols) == len(symbols):
-                logger.info("Completed scan cycle, resetting scanned symbols")
-                scanned_symbols.clear()
-            await asyncio.sleep(60)  # Wait before next cycle
+            try:
+                symbols = await fetch_usdt_pairs(exchange)
+                for i in range(0, len(symbols), BATCH_SIZE):
+                    batch = symbols[i:i + BATCH_SIZE]
+                    tasks = [process_signal(symbol, exchange) for symbol in batch if symbol not in scanned_symbols]
+                    results = await asyncio.gather(*tasks)
+                    scanned_symbols.update(batch)
+
+                    # Process valid signals
+                    valid_signals = [r for r in results if r is not None]
+                    if valid_signals:
+                        # Select top confidence signal
+                        top_signal = max(valid_signals, key=lambda x: x['confidence'])
+                        current_time = datetime.now(pytz.UTC)
+                        current_minute = current_time.timestamp() // 60
+
+                        # Check signal rate limit
+                        if current_minute > last_signal_minute:
+                            signal_count = 0
+                            last_signal_minute = current_minute
+
+                        if signal_count >= MAX_SIGNALS_PER_MINUTE:
+                            logger.info("Max signals per minute reached, skipping")
+                            continue
+
+                        signal_count += 1
+                        save_signal_times()  # Save to JSON
+
+                    # Delay between batches
+                    await asyncio.sleep(60)  # 60 seconds delay between batches
+
+                # Clear scanned symbols after full cycle, retain cooldown symbols
+                if len(scanned_symbols) >= len(symbols):
+                    current_time = datetime.now(pytz.UTC)
+                    scanned_symbols = {s for s in scanned_symbols if s in last_signal_time and (current_time - last_signal_time[s]).total_seconds() < COOLDOWN}
+                    logger.info("Completed scan cycle, retaining cooldown symbols")
+
+                # Wait before next cycle
+                await asyncio.sleep(CYCLE_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Scanning loop error: {str(e)}")
+                await asyncio.sleep(60)
+
+        await exchange.close()
 
     except Exception as e:
         logger.error(f"Error starting Telegram bot: {str(e)}")
