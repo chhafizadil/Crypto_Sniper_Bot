@@ -49,9 +49,9 @@ class SignalPredictor:
             conditions = []
             logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.4f}, MACD Signal: {latest['macd_signal']:.4f}, ADX: {latest['adx']:.2f}, Close: {latest['close']:.2f}")
 
-            if latest['rsi'] < 30:
+            if latest['rsi'] < 25:  # Updated RSI threshold
                 conditions.append("Oversold RSI")
-            elif latest['rsi'] > 70:
+            elif latest['rsi'] > 75:  # Updated RSI threshold
                 conditions.append("Overbought RSI")
 
             if abs(latest['macd']) < 1e-5:
@@ -158,9 +158,9 @@ class SignalPredictor:
             bullish_count = sum(1 for c in conditions if c in bullish_conditions)
             bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            if bullish_count > bearish_count and confidence >= 60 and len(conditions) >= 2:
+            if bullish_count > bearish_count and confidence >= 70 and len(conditions) >= 2:  # Updated confidence threshold
                 direction = "LONG"
-            elif bearish_count > bullish_count and confidence >= 60 and len(conditions) >= 2:
+            elif bearish_count > bullish_count and confidence >= 70 and len(conditions) >= 2:  # Updated confidence threshold
                 direction = "SHORT"
 
             if not direction:
@@ -179,6 +179,20 @@ class SignalPredictor:
                 tp2 = round(entry - max(0.015 * entry, 1.5 * atr), 2)
                 tp3 = round(entry - max(0.02 * entry, 2.5 * atr), 2)
                 sl = round(entry + max(0.008 * entry, 1.0 * atr), 2)
+
+            # Additional check for duplicate TP/SL
+            if tp1 == tp2 or tp2 == tp3 or tp1 == entry or sl == entry:
+                logger.warning(f"[{symbol}] Invalid TP/SL values, adjusting")
+                if direction == "LONG":
+                    tp1 = round(entry + 0.015 * entry, 2)
+                    tp2 = round(entry + 0.025 * entry, 2)
+                    tp3 = round(entry + 0.035 * entry, 2)
+                    sl = round(entry - 0.01 * entry, 2)
+                else:
+                    tp1 = round(entry - 0.015 * entry, 2)
+                    tp2 = round(entry - 0.025 * entry, 2)
+                    tp3 = round(entry - 0.035 * entry, 2)
+                    sl = round(entry + 0.01 * entry, 2)
 
             tp1_percent = abs(tp1 - entry) / entry * 100
             if not (1.0 <= tp1_percent <= 2.0):
