@@ -1,12 +1,3 @@
-# Adjustments made:
-# 1. Increased CYCLE_INTERVAL to 1200 seconds (20 minutes) for slower cycles.
-# 2. Added 60-second delay after each batch to reduce signal frequency.
-# 3. Limit to 1 signal per batch (highest confidence).
-# 4. Increased COOLDOWN to 6 hours (21600 seconds).
-# 5. Prevent scanned_symbols reset until cooldown expires.
-# 6. Added max 1 signal per minute check.
-# 7. Ensured "✔" in logging.
-
 import asyncio
 import ccxt.async_support as ccxt
 from typing import Dict, List, Set
@@ -17,9 +8,11 @@ from telebot.sender import send_signal
 from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
 from core.utils import get_timestamp
 import logging
+import json
+import os
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)  # Changed to DEBUG for detailed logs
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Set to track scanned symbols in a cycle
@@ -32,10 +25,22 @@ BATCH_SIZE = 20
 COOLDOWN = 6 * 3600
 # Cycle interval (20 minutes in seconds)
 CYCLE_INTERVAL = 1200
-# Last signal sent time for rate limiting
-last_signal_sent_time: float = 0
-# Minimum interval between signals (60 seconds)
-MIN_SIGNAL_INTERVAL = 60
+# Maximum signals per minute
+MAX_SIGNALS_PER_MINUTE = 1
+# File to store last signal times
+SIGNAL_TIME_FILE = "last_signal_times.json"
+
+def load_signal_times():
+    """Load last signal times from JSON file."""
+    if os.path.exists(SIGNAL_TIME_FILE):
+        with open(SIGNAL_TIME_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_signal_times():
+    """Save last signal times to JSON file."""
+    with open(SIGNAL_TIME_FILE, 'w') as f:
+        json.dump(last_signal_time, f)
 
 async def fetch_usdt_pairs(exchange: ccxt.binance) -> List[str]:
     """Fetch all USDT trading pairs."""
@@ -50,7 +55,7 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         # Fetch ticker for volume check
         ticker = await exchange.fetch_ticker(symbol)
         volume_usd = ticker['quoteVolume']
-        if volume_usd < 2_000_000:  # Updated to 2M USD
+        if volume_usd < 2_000_000:  # Updated volume threshold
             logger.info(f"Rejecting {symbol}: Low volume (${volume_usd:.2f} < $2,000,000)")
             return None
 
@@ -68,14 +73,14 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         analysis_result = multi_timeframe_analysis(indicators, ohlcv_data)
 
         # Check agreement (85% threshold)
-        if analysis_result['agreement'] < 85:  # Updated to 85%
+        if analysis_result['agreement'] < 85:  # Updated threshold
             logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result['agreement']} < 85%)")
             return None
 
         # Predict signal
         signal = predict_signal(ohlcv_data, indicators, analysis_result)
-        if not signal:
-            logger.info(f"No signal for {symbol}")
+        if not signal or signal['confidence'] < 70.0:  # Updated confidence threshold
+            logger.info(f"No signal or low confidence for {symbol}")
             return None
 
         # Check for duplicate TP/SL values
@@ -89,19 +94,26 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
             logger.info(f"Rejecting {symbol}: In cooldown")
             return None
 
-        return {'signal': signal, 'confidence': signal['confidence'], 'symbol': symbol}
+        return {'symbol': symbol, 'signal': signal, 'confidence': signal['confidence']}
 
     except Exception as e:
         logger.error(f"Error processing {symbol}: {str(e)}")
         return None
 
 async def main():
-    """Main loop to process USDT pairs in batches."""
+    """Main loop to process USDT pairs in batches with signal limiting."""
     exchange = ccxt.binance({
         'apiKey': API_KEY,
         'secret': API_SECRET,
         'enableRateLimit': True,
     })
+
+    # Load last signal times
+    global last_signal_time
+    last_signal_time = load_signal_times()
+    
+    signal_count = 0
+    last_signal_minute = get_timestamp() // 60
 
     while True:
         try:
@@ -113,35 +125,42 @@ async def main():
                 batch = usdt_pairs[i:i + BATCH_SIZE]
                 tasks = [process_symbol(exchange, symbol) for symbol in batch if symbol not in scanned_symbols]
                 results = await asyncio.gather(*tasks)
+                scanned_symbols.update(batch)
 
-                # Select highest confidence signal from batch
+                # Filter valid signals and select top confidence
                 valid_signals = [r for r in results if r is not None]
                 if valid_signals:
-                    best_signal = max(valid_signals, key=lambda x: x['confidence'])
-                    signal = best_signal['signal']
-                    symbol = best_signal['symbol']
-                    
-                    # Check signal rate limit
+                    top_signal = max(valid_signals, key=lambda x: x['confidence'])
                     current_time = get_timestamp()
-                    if current_time - last_signal_sent_time < MIN_SIGNAL_INTERVAL:
-                        logger.info(f"Rate limit: Waiting {MIN_SIGNAL_INTERVAL - (current_time - last_signal_sent_time):.2f} seconds")
-                        await asyncio.sleep(MIN_SIGNAL_INTERVAL - (current_time - last_signal_sent_time))
-                    
-                    # Send signal to Telegram
+                    current_minute = current_time // 60
+
+                    # Check signal rate limit
+                    if current_minute > last_signal_minute:
+                        signal_count = 0
+                        last_signal_minute = current_minute
+
+                    if signal_count >= MAX_SIGNALS_PER_MINUTE:
+                        logger.info("Max signals per minute reached, skipping")
+                        continue
+
+                    # Send top signal
+                    symbol = top_signal['symbol']
+                    signal = top_signal['signal']
                     await send_signal(symbol, signal, TELEGRAM_CHAT_ID)
                     last_signal_time[symbol] = current_time
-                    last_signal_sent_time = get_timestamp()
+                    save_signal_times()  # Save to JSON
+                    signal_count += 1
                     logger.info(f"Signal sent successfully: {symbol} - {signal['direction']} ✔")
-                
-                scanned_symbols.update(batch)
-                await asyncio.sleep(60)  # 60-second delay after each batch
 
-            # Clear scanned symbols only for symbols past cooldown
-            current_time = get_timestamp()
-            for symbol in list(scanned_symbols):
-                if symbol in last_signal_time and (current_time - last_signal_time[symbol]) >= COOLDOWN:
-                    scanned_symbols.remove(symbol)
-            logger.info(f"Cycle complete, {len(scanned_symbols)} symbols remain in cooldown")
+                # Delay between batches
+                await asyncio.sleep(60)  # 60 seconds delay between batches
+
+            # Clear scanned symbols after full cycle
+            if len(scanned_symbols) >= len(usdt_pairs):
+                # Keep symbols in cooldown
+                current_time = get_timestamp()
+                scanned_symbols = {s for s in scanned_symbols if s in last_signal_time and (current_time - last_signal_time[s]) < COOLDOWN}
+                logger.info("Completed full cycle, retaining cooldown symbols")
 
             # Wait for next cycle (20 minutes)
             await asyncio.sleep(CYCLE_INTERVAL)
