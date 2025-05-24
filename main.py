@@ -21,13 +21,14 @@ from dotenv import load_dotenv
 import numpy as np
 import json
 from core.engine import process_symbol, fetch_usdt_pairs
-from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
 import ccxt.async_support as ccxt
 
+# Load environment variables
 load_dotenv()
-
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', "7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU")
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', "-4694205383")
+API_KEY = os.getenv('BINANCE_API_KEY')
+API_SECRET = os.getenv('BINANCE_API_SECRET')
 WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/webhook"
 MIN_VOLUME = 2_000_000  # Updated to 2 million USD
 MAX_SIGNALS_PER_MINUTE = 1  # Limit to 1 signal per minute
