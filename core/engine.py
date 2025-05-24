@@ -5,7 +5,7 @@ from core.indicators import calculate_indicators
 from core.multi_timeframe import multi_timeframe_analysis
 from model.predictor import SignalPredictor
 from telebot.sender import send_signal
-from core.utils import get_timestamp
+from utils.helpers import get_timestamp  # Updated import
 from dotenv import load_dotenv
 import logging
 import json
