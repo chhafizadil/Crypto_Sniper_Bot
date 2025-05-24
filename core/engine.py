@@ -3,13 +3,19 @@ import ccxt.async_support as ccxt
 from typing import Dict, List, Set
 from core.indicators import calculate_indicators
 from core.multi_timeframe import multi_timeframe_analysis
-from model.predictor import SignalPredictor  # Updated import
+from model.predictor import SignalPredictor
 from telebot.sender import send_signal
-from config.settings import API_KEY, API_SECRET, TELEGRAM_CHAT_ID
 from core.utils import get_timestamp
+from dotenv import load_dotenv
 import logging
 import json
 import os
+
+# Load environment variables
+load_dotenv()
+API_KEY = os.getenv("BINANCE_API_KEY")
+API_SECRET = os.getenv("BINANCE_API_SECRET")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -55,7 +61,7 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         # Fetch ticker for volume check
         ticker = await exchange.fetch_ticker(symbol)
         volume_usd = ticker['quoteVolume']
-        if volume_usd < 2_000_000:  # Updated volume threshold
+        if volume_usd < 2_000_000:
             logger.info(f"Rejecting {symbol}: Low volume (${volume_usd:.2f} < $2,000,000)")
             return None
 
@@ -73,14 +79,14 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         analysis_result = multi_timeframe_analysis(indicators, ohlcv_data)
 
         # Check agreement (85% threshold)
-        if analysis_result['agreement'] < 85:  # Updated threshold
+        if analysis_result['agreement'] < 85:
             logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result['agreement']} < 85%)")
             return None
 
         # Predict signal using SignalPredictor
-        predictor = SignalPredictor()  # Create instance
-        signal = await predictor.predict_signal(symbol, ohlcv_data['15m'], '15m')  # Use instance method
-        if not signal or signal['confidence'] < 70.0:  # Updated confidence threshold
+        predictor = SignalPredictor()
+        signal = await predictor.predict_signal(symbol, ohlcv_data['15m'], '15m')
+        if not signal or signal['confidence'] < 70.0:
             logger.info(f"No signal or low confidence for {symbol}")
             return None
 
@@ -149,12 +155,12 @@ async def main():
                     signal = top_signal['signal']
                     await send_signal(symbol, signal, TELEGRAM_CHAT_ID)
                     last_signal_time[symbol] = current_time
-                    save_signal_times()  # Save to JSON
+                    save_signal_times()
                     signal_count += 1
                     logger.info(f"Signal sent successfully: {symbol} - {signal['direction']} ✔")
 
                 # Delay between batches
-                await asyncio.sleep(60)  # 60 seconds delay between batches
+                await asyncio.sleep(60)
 
             # Clear scanned symbols after full cycle
             if len(scanned_symbols) >= len(usdt_pairs):
