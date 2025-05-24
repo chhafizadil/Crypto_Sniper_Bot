@@ -1,103 +1,79 @@
-# Binance API سے ڈیٹا اکٹھا کرنے اور کیشنگ۔
-# تبدیلیاں:
-# - والیوم تھریش ہولڈ کو $1,000,000 پر سیٹ کیا۔
-# - کیش TTL کو 600 سیکنڈ پر اپ ڈیٹ کیا۔
-# - API کالز کو آپٹمائز کیا۔
-
-import asyncio
-import ccxt.async_support as ccxt
 import pandas as pd
+import numpy as np
 from utils.logger import logger
-import cachetools
 
-data_cache = cachetools.TTLCache(maxsize=100, ttl=600)
+def calculate_ema(series, period):
+    """Manual EMA calculation to avoid library issues"""
+    return series.ewm(span=period, adjust=False).mean()
 
-# ریئل ٹائم OHLCV ڈیٹا کیشنگ کے ساتھ
-async def fetch_realtime_data(symbol, timeframe="15m", limit=50):
+def calculate_indicators(df):
     try:
-        cache_key = f"{symbol}_{timeframe}"
-        if cache_key in data_cache:
-            logger.info(f"[{symbol}] {timeframe} کے لیے کیشڈ OHLCV ڈیٹا استعمال")
-            return data_cache[cache_key]
+        df = df.copy()
 
-        exchange = ccxt.binance({"enableRateLimit": True})
-        try:
-            ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-            if not ohlcv or len(ohlcv) < 50:
-                logger.warning(f"[{symbol}] {timeframe} کے لیے ناکافی OHLCV ڈیٹا")
-                return None
-
-            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"], dtype="float32")
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-
-            if df['close'].le(0.001).any() or df['volume'].le(500).any():
-                logger.warning(f"[{symbol}] غلط ڈیٹا: بہت کم قیمت یا والیوم")
-                return None
-
-            try:
-                tickers = await exchange.fetch_tickers([symbol])
-                ticker = tickers.get(symbol, {})
-                quote_volume_24h = ticker.get('quoteVolume', 0)
-                base_volume_24h = ticker.get('baseVolume', 0)
-                last_price = ticker.get('last', df['close'].iloc[-1])
-                logger.info(f"[{symbol}] خام ٹکر ڈیٹا: quoteVolume={quote_volume_24h}, baseVolume={base_volume_24h}, lastPrice={last_price}")
-                if quote_volume_24h <= 0 and base_volume_24h > 0 and last_price > 0:
-                    quote_volume_24h = base_volume_24h * last_price
-            except Exception as e:
-                logger.error(f"[{symbol}] ٹکرز حاصل کرنے میں خرابی: {e}")
-                quote_volume_24h = 0
-
-            if quote_volume_24h < 1000000:
-                logger.warning(f"[{symbol}] مسترد: کم والیوم (${quote_volume_24h:,.2f} < $1,000,000)")
-                return None
-            df['quote_volume_24h'] = quote_volume_24h
-
-            data_cache[cache_key] = df
-            logger.info(f"[{symbol}] {timeframe} کے لیے OHLCV ڈیٹا حاصل، limit={limit}, 24h والیوم: ${quote_volume_24h:,.2f}")
+        if len(df) < 30 or df[['open', 'high', 'low', 'close', 'volume']].isnull().any().any():
+            logger.warning("Invalid or insufficient input data for indicators")
             return df
-        finally:
-            await exchange.close()
+
+        logger.info(f"Calculating indicators for {len(df)} candles")
+
+        # RSI
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # Volume SMA 20
+        df['volume_sma_20'] = df['volume'].rolling(window=20, min_periods=1).mean()
+
+        # MACD
+        scaled_close = df['close'] * 1000
+        ema_fast = calculate_ema(scaled_close, 12)
+        ema_slow = calculate_ema(scaled_close, 26)
+        df['macd'] = (ema_fast - ema_slow) / 1000
+        df['macd_signal'] = calculate_ema(df['macd'], 9)
+        if df['macd'].abs().mean() < 1e-5:
+            logger.warning("MACD values near zero, possible data issue")
+
+        # ATR
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['atr'] = tr.rolling(window=14).mean()
+
+        # ADX with capping
+        plus_dm = df['high'].diff().where(df['high'].diff() > df['low'].diff(), 0)
+        minus_dm = (-df['low'].diff()).where(df['low'].diff() < df['high'].diff(), 0)
+        tr = tr.rolling(window=14).sum()
+        plus_di = 100 * (plus_dm.rolling(window=14).sum() / tr)
+        minus_di = 100 * (minus_dm.rolling(window=14).sum() / tr)
+        dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di))
+        df['adx'] = np.clip(dx.rolling(window=14).mean(), 0, 100)
+
+        # Bollinger Bands
+        sma_20 = df['close'].rolling(window=20).mean()
+        std_20 = df['close'].rolling(window=20).std()
+        df['bollinger_upper'] = sma_20 + 2 * std_20
+        df['bollinger_lower'] = sma_20 - 2 * std_20
+
+        # Stochastic Oscillator
+        lowest_low = df['low'].rolling(window=14).min()
+        highest_high = df['high'].rolling(window=14).max()
+        df['stoch_k'] = 100 * (df['close'] - lowest_low) / (highest_high - lowest_low)
+        df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
+
+        # VWAP
+        typical_price = (df['high'] + df['low'] + df['close']) / 3
+        df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+
+        # Handle NaN and Inf
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.ffill(inplace=True)
+        df.fillna(df.mean(numeric_only=True), inplace=True)
+
+        logger.info("Indicators calculated: rsi, volume_sma_20, macd, atr, adx, bollinger_bands, stochastic, vwap")
+        return df
     except Exception as e:
-        logger.error(f"[{symbol}] OHLCV حاصل کرنے میں خرابی: {e}")
-        return None
-
-# WebSocket ڈیٹا کلیکٹر
-async def websocket_collector(symbol, timeframe="15m", limit=50):
-    exchange = ccxt.binance({"enableRateLimit": True})
-    try:
-        while True:
-            ohlcv = await exchange.watch_ohlcv(symbol, timeframe, limit=limit)
-            if not ohlcv or len(ohlcv) < 50:
-                logger.warning(f"[{symbol}] ناکافی WebSocket OHLCV ڈیٹا")
-                continue
-            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"], dtype="float32")
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            if df['close'].le(0.001).any() or df['volume'].le(500).any():
-                logger.warning(f"[{symbol}] غلط WebSocket ڈیٹا: بہت کم قیمت یا والیوم")
-                continue
-
-            try:
-                tickers = await exchange.fetch_tickers([symbol])
-                ticker = tickers.get(symbol, {})
-                quote_volume_24h = ticker.get('quoteVolume', 0)
-                base_volume_24h = ticker.get('baseVolume', 0)
-                last_price = ticker.get('last', df['close'].iloc[-1])
-                if quote_volume_24h <= 0 and base_volume_24h > 0 and last_price > 0:
-                    quote_volume_24h = base_volume_24h * last_price
-            except Exception as e:
-                logger.error(f"[{symbol}] ٹکرز حاصل کرنے میں خرابی: {e}")
-                quote_volume_24h = 0
-
-            if quote_volume_24h < 1000000:
-                logger.warning(f"[{symbol}] مسترد: کم والیوم (${quote_volume_24h:,.2f} < $1,000,000)")
-                continue
-
-            df['quote_volume_24h'] = quote_volume_24h
-            cache_key = f"{symbol}_{timeframe}"
-            data_cache[cache_key] = df
-            logger.info(f"[{symbol}] WebSocket OHLCV ڈیٹا اپ ڈیٹ، {timeframe}، limit={limit}, 24h والیوم: ${quote_volume_24h:,.2f}")
-            await asyncio.sleep(60)
-    except Exception as e:
-        logger.error(f"[{symbol}] WebSocket کلیکٹر میں خرابی: {e}")
-    finally:
-        await exchange.close()
+        logger.error(f"Error calculating indicators: {str(e)}")
+        return df
