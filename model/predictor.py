@@ -27,7 +27,6 @@ class SignalPredictor:
         return durations.get(timeframe, 'Unknown')
 
     def calculate_tp_hit_possibilities(self, symbol: str, direction: str, entry: float, tp1: float, tp2: float, tp3: float) -> tuple:
-        # Historical check removed as per user request
         logger.info(f"[{symbol}] Using fixed TP possibilities: TP1=60%, TP2=40%, TP3=20%")
         return 60.0, 40.0, 20.0
 
@@ -220,7 +219,9 @@ class SignalPredictor:
                 'volume': float(latest['volume']),
                 'trade_type': trade_type,
                 'trade_duration': self.get_trade_duration(timeframe),
-                'timestamp': pd.Timestamp.now().isoformat()
+                'timestamp': pd.Timestamp.now().isoformat(),
+                'atr': float(atr),
+                'leverage': determine_leverage(conditions)  # Added leverage
             }
 
             logger.info(f"[{symbol}] Signal generated for {timeframe}: {direction}, Confidence: {signal['confidence']:.2f}%, TP1: {signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)")
