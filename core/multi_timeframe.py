@@ -1,5 +1,6 @@
 from typing import Dict
-from core.indicators import calculate_rsi, calculate_macd, calculate_vwap, detect_candle_patterns
+from core.indicators import calculate_indicators
+from core.candle_patterns import detect_candle_patterns
 
 def multi_timeframe_analysis(indicators: Dict, ohlcv_data: Dict) -> Dict:
     """Perform multi-timeframe analysis for signal agreement."""
@@ -8,18 +9,28 @@ def multi_timeframe_analysis(indicators: Dict, ohlcv_data: Dict) -> Dict:
     total_timeframes = len(results)
 
     for timeframe in results:
-        # Calculate indicators for each timeframe
+        # Get OHLCV data for the timeframe
         ohlcv = ohlcv_data[timeframe]
-        rsi = calculate_rsi(ohlcv)
-        macd = calculate_macd(ohlcv)
-        vwap = calculate_vwap(ohlcv)
-        candle_patterns = detect_candle_patterns(ohlcv)
+        # Convert OHLCV to DataFrame
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # Calculate indicators using calculate_indicators
+        df = calculate_indicators(df)
+        
+        # Extract latest indicator values
+        latest = df.iloc[-1]
+        rsi = latest['rsi']
+        macd = latest['macd']
+        macd_signal = latest['macd_signal']
+        vwap = latest['vwap']
+        # Detect candle patterns
+        candle_patterns = detect_candle_patterns(df)
 
         # Determine signal direction
         direction = None
-        if rsi[-1] > 75 and macd['signal'][-1] > macd['macd'][-1]:  # Updated RSI threshold
+        if rsi > 75 and macd > macd_signal:  # Updated RSI threshold
             direction = 'SHORT'
-        elif rsi[-1] < 25 and macd['signal'][-1] < macd['macd'][-1]:  # Updated RSI threshold
+        elif rsi < 25 and macd < macd_signal:  # Updated RSI threshold
             direction = 'LONG'
         elif any(p in ['bullish_engulfing', 'hammer'] for p in candle_patterns):
             direction = 'LONG'
@@ -28,9 +39,9 @@ def multi_timeframe_analysis(indicators: Dict, ohlcv_data: Dict) -> Dict:
 
         results[timeframe] = {
             'direction': direction,
-            'rsi': rsi[-1],
-            'macd': macd,
-            'vwap': vwap[-1],
+            'rsi': rsi,
+            'macd': {'macd': macd, 'signal': macd_signal},
+            'vwap': vwap,
             'candle_patterns': candle_patterns
         }
 
