@@ -109,6 +109,7 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
 
 async def main():
     """Main loop to process USDT pairs in batches with signal limiting."""
+    global scanned_symbols  # یہ لائن شامل کرو
     exchange = ccxt.binance({
         'apiKey': API_KEY,
         'secret': API_SECRET,
@@ -165,7 +166,11 @@ async def main():
             # Clear scanned symbols after full cycle
             if len(scanned_symbols) >= len(usdt_pairs):
                 current_time = get_timestamp()
-                scanned_symbols = {s for s in scanned_symbols if s in last_signal_time and (current_time - last_signal_time[s]) < COOLDOWN}
+                # نیا سیٹ بنائیں بغیر scanned_symbols کو دوبارہ اسائن کیے
+                scanned_symbols.clear()  # پرانے سمبلز ہٹائیں
+                scanned_symbols.update(
+                    s for s in usdt_pairs if s in last_signal_time and (current_time - last_signal_time[s]) < COOLDOWN
+                )
                 logger.info("Completed full cycle, retaining cooldown symbols")
 
             # Wait for next cycle (20 minutes)
