@@ -6,6 +6,7 @@
 # - Added delays and signal limits to prevent flood control.
 # - All logging and comments in English.
 # - Fixed timestamp parsing issue.
+# - Fixed scanned_symbols definition error.
 
 import telegram
 import asyncio
@@ -22,6 +23,7 @@ import numpy as np
 import json
 from core.engine import process_symbol, fetch_usdt_pairs
 import ccxt.async_support as ccxt
+from typing import Set, Dict
 
 # Load environment variables
 load_dotenv()
@@ -38,8 +40,8 @@ COOLDOWN = 6 * 3600  # 6 hours in seconds
 SIGNAL_TIME_FILE = "last_signal_times.json"
 
 # Track scanned symbols and last signal times
-scanned_symbols = set()
-last_signal_time = {}
+scanned_symbols: Set[str] = set()  # Fixed: Defined globally with type hint
+last_signal_time: Dict[str, datetime] = {}
 
 def load_signal_times():
     """Load last signal times from JSON file."""
@@ -496,7 +498,10 @@ async def start_bot():
                 # Clear scanned symbols after full cycle, retain cooldown symbols
                 if len(scanned_symbols) >= len(symbols):
                     current_time = datetime.now(pytz.UTC)
-                    scanned_symbols = {s for s in scanned_symbols if s in last_signal_time and (current_time - last_signal_time[s]).total_seconds() < COOLDOWN}
+                    scanned_symbols.clear()  # Clear and update with cooldown symbols
+                    scanned_symbols.update(
+                        s for s in symbols if s in last_signal_time and (current_time - last_signal_time[s]).total_seconds() < COOLDOWN
+                    )
                     logger.info("Completed scan cycle, retaining cooldown symbols")
 
                 # Wait before next cycle
