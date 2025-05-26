@@ -270,6 +270,7 @@ async def webhook(request: Request):
 
 async def start_bot():
     # Start bot and run scanning loop
+    os.makedirs(os.path.dirname(SIGNAL_TIME_FILE), exist_ok=True)  # Ensure logs directory exists
     global telegram_app
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
