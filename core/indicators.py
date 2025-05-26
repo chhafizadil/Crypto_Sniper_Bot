@@ -3,7 +3,7 @@ import numpy as np
 from utils.logger import logger
 
 def calculate_ema(series, period):
-    """Manual EMA calculation to avoid library issues"""
+    "Manual EMA calculation to avoid library issues"
     return series.ewm(span=period, adjust=False).mean()
 
 def calculate_indicators(df):
