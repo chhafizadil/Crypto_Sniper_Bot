@@ -13,7 +13,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 logger = logging.getLogger(__name__)
 
 async def send_signal(symbol: str, signal: dict, chat_id: str):
-    """Send trading signal to Telegram chat."""
+    "Send trading signal to Telegram chat."
     try:
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
         message = (
