@@ -1,16 +1,17 @@
 import asyncio
 import ccxt.async_support as ccxt
+import pandas as pd
 from typing import Dict, List, Set
 from core.indicators import calculate_indicators
 from core.multi_timeframe import multi_timeframe_analysis
 from model.predictor import SignalPredictor
 from telebot.sender import send_signal
-from utils.helpers import get_timestamp  # Updated import
+from utils.helpers import get_timestamp
 from dotenv import load_dotenv
 import logging
 import json
 import os
-import pandas as pd
+
 # Load environment variables
 load_dotenv()
 API_KEY = os.getenv("BINANCE_API_KEY")
@@ -50,17 +51,21 @@ def save_signal_times():
 
 async def fetch_usdt_pairs(exchange: ccxt.binance) -> List[str]:
     """Fetch all USDT trading pairs."""
-    markets = await exchange.load_markets()
-    usdt_pairs = [symbol for symbol in markets if symbol.endswith('USDT')]
-    logger.info(f"Found {len(usdt_pairs)} USDT pairs")
-    return usdt_pairs
+    try:
+        markets = await exchange.load_markets()
+        usdt_pairs = [symbol for symbol in markets if symbol.endswith('/USDT')]
+        logger.info(f"Found {len(usdt_pairs)} USDT pairs")
+        return usdt_pairs
+    except Exception as e:
+        logger.error(f"Error fetching USDT pairs: {str(e)}")
+        return []
 
 async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
     """Process a single symbol for signal generation and return signal with confidence."""
     try:
         # Fetch ticker for volume check
         ticker = await exchange.fetch_ticker(symbol)
-        volume_usd = ticker['quoteVolume']
+        volume_usd = ticker.get('quoteVolume', 0)
         if volume_usd < 2_000_000:
             logger.info(f"Rejecting {symbol}: Low volume (${volume_usd:.2f} < $2,000,000)")
             return None
@@ -70,17 +75,21 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         ohlcv_data = {}
         for tf in timeframes:
             ohlcv = await exchange.fetch_ohlcv(symbol, tf, limit=100)
-            ohlcv_data[tf] = ohlcv
-
-        # Calculate indicators
-        indicators = calculate_indicators(ohlcv_data)
+            if not ohlcv or len(ohlcv) < 30:
+                logger.warning(f"Insufficient OHLCV data for {symbol} on {tf}: {len(ohlcv)} rows")
+                return None
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df = calculate_indicators(df)
+            if df is None:
+                logger.warning(f"Failed to calculate indicators for {symbol} on {tf}")
+                return None
+            ohlcv_data[tf] = df
 
         # Perform multi-timeframe analysis
-        analysis_result = multi_timeframe_analysis(indicators, ohlcv_data)
-
-        # Check agreement (85% threshold)
-        if analysis_result['agreement'] < 85:
-            logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result['agreement']} < 85%)")
+        analysis_result = await multi_timeframe_analysis(symbol, ohlcv_data, timeframes)
+        if analysis_result is None or analysis_result.get('agreement', 0) < 85:
+            logger.info(f"Rejecting {symbol}: Low timeframe agreement ({analysis_result.get('agreement', 0)} < 85%)")
             return None
 
         # Predict signal using SignalPredictor
@@ -109,7 +118,6 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
 
 async def main():
     """Main loop to process USDT pairs in batches with signal limiting."""
-    global scanned_symbols  # یہ لائن شامل کرو
     exchange = ccxt.binance({
         'apiKey': API_KEY,
         'secret': API_SECRET,
@@ -119,14 +127,18 @@ async def main():
     # Load last signal times
     global last_signal_time
     last_signal_time = load_signal_times()
-    
+
     signal_count = 0
     last_signal_minute = get_timestamp() // 60
 
-    while True:
-        try:
+    try:
+        while True:
             # Fetch USDT pairs
             usdt_pairs = await fetch_usdt_pairs(exchange)
+            if not usdt_pairs:
+                logger.error("No USDT pairs found, retrying in 60 seconds")
+                await asyncio.sleep(60)
+                continue
 
             # Process symbols in batches
             for i in range(0, len(usdt_pairs), BATCH_SIZE):
@@ -166,8 +178,7 @@ async def main():
             # Clear scanned symbols after full cycle
             if len(scanned_symbols) >= len(usdt_pairs):
                 current_time = get_timestamp()
-                # نیا سیٹ بنائیں بغیر scanned_symbols کو دوبارہ اسائن کیے
-                scanned_symbols.clear()  # پرانے سمبلز ہٹائیں
+                scanned_symbols.clear()
                 scanned_symbols.update(
                     s for s in usdt_pairs if s in last_signal_time and (current_time - last_signal_time[s]) < COOLDOWN
                 )
@@ -176,11 +187,11 @@ async def main():
             # Wait for next cycle (20 minutes)
             await asyncio.sleep(CYCLE_INTERVAL)
 
-        except Exception as e:
-            logger.error(f"Main loop error: {str(e)}")
-            await asyncio.sleep(60)
-
-    await exchange.close()
+    except Exception as e:
+        logger.error(f"Main loop error: {str(e)}")
+        await asyncio.sleep(60)
+    finally:
+        await exchange.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
