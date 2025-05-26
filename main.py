@@ -1,10 +1,10 @@
-# Main script for Telegram bot integration to send trading signals and handle commands
+# Main script for Telegram bot integration with FastAPI for Koyeb deployment
 # Aligned with merged files (indicators.py, predictor.py, sender.py, report_generator.py, trainer.py)
 # Changes:
-# - Retained original logic (Telegram bot, batch scanning, cooldown, volume checks)
-# - Updated imports to use merged modules (predictor.py, sender.py)
-# - Integrated ML predictions from predictor.py
-# - Ensured real-time Binance entry price via collector.py
+# - Added FastAPI for /health and /webhook endpoints to fix Koyeb health check
+# - Integrated Telegram bot with FastAPI webhook handling
+# - Retained original logic (batch scanning, cooldown, volume checks, ML predictions)
+# - Ensured compatibility with gunicorn and uvicorn
 # - Fixed import and dependency issues
 
 import telegram
@@ -27,6 +27,11 @@ from core.indicators import calculate_tp_probabilities_and_prices, adjust_tp_for
 from telebot.report_generator import generate_daily_summary
 import ccxt.async_support as ccxt
 from typing import Set, Dict
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+
+# Initialize FastAPI app for Koyeb
+app = FastAPI()
 
 # Load environment variables
 load_dotenv()
@@ -45,6 +50,9 @@ SIGNAL_TIME_FILE = "last_signal_times.json"
 # Track scanned symbols and signal times
 scanned_symbols: Set[str] = set()
 last_signal_time: Dict[str, datetime] = {}
+
+# Initialize Telegram bot application
+telegram_app = None
 
 def load_signal_times():
     # Load last signal times from JSON
@@ -108,7 +116,7 @@ async def fetch_usdt_pairs(exchange):
         logger.error(f"Error fetching USDT pairs: {str(e)}")
         return []
 
-# Command handlers
+# Telegram command handlers
 async def start(update, context):
     await update.message.reply_text("Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help.")
 
@@ -223,7 +231,6 @@ async def process_signal(symbol, exchange):
             logger.info(f"Rejecting {symbol}: Low volume ({volume_str} < ${MIN_VOLUME:,})")
             return None
 
-        # Generate signal using predictor.py
         predictor = SignalPredictor()
         ohlcv = await fetch_realtime_data(symbol, '15m', limit=100)
         if ohlcv is None or len(ohlcv) < 30:
@@ -244,8 +251,26 @@ async def process_signal(symbol, exchange):
         logger.error(f"Error processing signal for {symbol}: {str(e)}")
         return None
 
+# FastAPI endpoints
+@app.get("/health")
+async def health_check():
+    # Health check for Koyeb
+    return JSONResponse(status_code=200, content={"status": "healthy"})
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    # Handle Telegram webhook updates
+    try:
+        update = telegram.Update.de_json(await request.json(), telegram_app.bot)
+        await telegram_app.process_update(update)
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        raise HTTPException(status_code=400, content={"error": str(e)})
+
 async def start_bot():
     # Start bot and run scanning loop
+    global telegram_app
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
@@ -254,16 +279,16 @@ async def start_bot():
         logger.info(f"Webhook set: {WEBHOOK_URL}")
         await bot.send_message(chat_id=CHAT_ID, text="Bot started successfully!")
 
-        application = Application.builder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("summary", summary))
-        application.add_handler(CommandHandler("report", report))
-        application.add_handler(CommandHandler("status", status))
-        application.add_handler(CommandHandler("signal", signal))
-        application.add_handler(CommandHandler("test", test))
-        application.add_handler(CommandHandler("help", help))
-        await application.initialize()
-        await application.start()
+        telegram_app = Application.builder().token(BOT_TOKEN).build()
+        telegram_app.add_handler(CommandHandler("start", start))
+        telegram_app.add_handler(CommandHandler("summary", summary))
+        telegram_app.add_handler(CommandHandler("report", report))
+        telegram_app.add_handler(CommandHandler("status", status))
+        telegram_app.add_handler(CommandHandler("signal", signal))
+        telegram_app.add_handler(CommandHandler("test", test))
+        telegram_app.add_handler(CommandHandler("help", help))
+        await telegram_app.initialize()
+        await telegram_app.start()
         logger.info("Telegram webhook bot started")
 
         exchange = ccxt.binance({
@@ -327,4 +352,6 @@ async def start_bot():
         raise
 
 if __name__ == "__main__":
-    asyncio.run(start_bot())
+    import uvicorn
+    # Run FastAPI app locally for testing
+    uvicorn.run(app, host="0.0.0.0", port=8000)
