@@ -1,18 +1,43 @@
 import pandas as pd
 import numpy as np
+import ccxt.async_support as ccxt
 from utils.logger import logger
+
+async def fetch_realtime_data(symbol: str, timeframe: str, limit: int = 50) -> pd.DataFrame:
+    """Fetch real-time OHLCV data from Binance."""
+    try:
+        exchange = ccxt.binance({
+            'enableRateLimit': True,
+        })
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        if not ohlcv or len(ohlcv) < 30:
+            logger.warning(f"Insufficient OHLCV data for {symbol} on {timeframe}: {len(ohlcv)} rows")
+            return None
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['quote_volume_24h'] = df['close'] * df['volume']
+        logger.info(f"Fetched {len(df)} rows for {symbol} on {timeframe}")
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching data for {symbol} on {timeframe}: {str(e)}")
+        return None
+    finally:
+        await exchange.close()
 
 def calculate_ema(series, period):
     """Manual EMA calculation to avoid library issues"""
     return series.ewm(span=period, adjust=False).mean()
 
 def calculate_indicators(df):
+    """Calculate technical indicators for the given DataFrame."""
     try:
+        if not isinstance(df, pd.DataFrame):
+            logger.error("Input is not a pandas DataFrame")
+            return None
         df = df.copy()
-
         if len(df) < 30 or df[['open', 'high', 'low', 'close', 'volume']].isnull().any().any():
-            logger.warning("Invalid or insufficient input data for indicators")
-            return df
+            logger.warning(f"Invalid or insufficient input data: {len(df)} rows")
+            return None
 
         logger.info(f"Calculating indicators for {len(df)} candles")
 
@@ -76,4 +101,4 @@ def calculate_indicators(df):
         return df
     except Exception as e:
         logger.error(f"Error calculating indicators: {str(e)}")
-        return df
+        return None
