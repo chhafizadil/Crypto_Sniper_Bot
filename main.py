@@ -57,7 +57,7 @@ def format_timestamp_to_pk(utc_timestamp_str):
         return pk_time.strftime("%d %B %Y, %I:%M %p")
     except Exception as e:
         logger.error(f"Error converting timestamp: {str(e)}")
-        return utc_timestamp_str
+            return utc_timestamp_str
 
 def calculate_tp_probabilities_and_prices(indicators, entry_price, atr):
     logger.info("Calculating dynamic TP probabilities and prices")
