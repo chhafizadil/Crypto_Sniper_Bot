@@ -1,21 +1,37 @@
+# Signal prediction with rule-based and ML logic
+# Merged from: trade_classifier.py
+# Changes:
+# - Integrated ML model (RandomForestClassifier) for signal prediction
+# - Merged trade classification logic from trade_classifier.py
+# - Balanced rule-based and ML predictions
+# - Ensured real-time entry price from Binance via collector.py
+
 import pandas as pd
 import numpy as np
 import asyncio
-from core.indicators import calculate_indicators
-from core.candle_patterns import (
-    is_bullish_engulfing, is_bearish_engulfing, is_doji,
-    is_hammer, is_shooting_star, is_three_white_soldiers, is_three_black_crows
-)
-from utils.fibonacci import calculate_fibonacci_levels
-from utils.support_resistance import calculate_support_resistance
-from core.trade_classifier import classify_trade
+from joblib import load
+from core.indicators import calculate_indicators, calculate_fibonacci_levels, calculate_support_resistance, detect_candle_patterns
+from core.indicators import calculate_tp_probabilities_and_prices, adjust_tp_for_stablecoin
 from utils.logger import logger
+from data.collector import fetch_realtime_data
+from sklearn.ensemble import RandomForestClassifier
+import os
 
 class SignalPredictor:
     def __init__(self):
+        # Initialize SignalPredictor with minimum data points
         self.min_data_points = 30
-        logger.info("Signal Predictor initialized")
+        self.model_path = "ml_models/rf_model.joblib"
+        self.ml_model = None
+        if os.path.exists(self.model_path):
+            try:
+                self.ml_model = load(self.model_path)
+                logger.info("Loaded RandomForest model for prediction")
+            except Exception as e:
+                logger.error(f"Error loading ML model: {str(e)}")
+        logger.info("SignalPredictor initialized")
 
+    # Get trade duration based on timeframe
     def get_trade_duration(self, timeframe: str) -> str:
         durations = {
             '5m': 'Up to 1 hour',
@@ -26,10 +42,58 @@ class SignalPredictor:
         }
         return durations.get(timeframe, 'Unknown')
 
+    # Calculate TP hit possibilities (fixed for simplicity)
     def calculate_tp_hit_possibilities(self, symbol: str, direction: str, entry: float, tp1: float, tp2: float, tp3: float) -> tuple:
-        logger.info(f"[{symbol}] Using fixed TP possibilities: TP1=60%, TP2=40%, TP3=20%")
+        # Use fixed TP hit probabilities
+        logger.info(f"[{symbol}] Using fixed TP possibilities")
         return 60.0, 40.0, 20.0
 
+    # Prepare features for ML prediction (from trainer.py)
+    def prepare_ml_features(self, df, symbol):
+        try:
+            df = df.copy()
+            df = calculate_indicators(df)
+            if df.empty:
+                logger.error(f"[{symbol}] Failed to prepare ML features")
+                return None
+
+            # Add candle patterns
+            df['bullish_engulfing'] = detect_candle_patterns(df).count('bullish_engulfing')
+            df['bearish_engulfing'] = detect_candle_patterns(df).count('bearish_engulfing')
+            df['doji'] = detect_candle_patterns(df).count('doji')
+            df['hammer'] = detect_candle_patterns(df).count('hammer')
+            df['shooting_star'] = detect_candle_patterns(df).count('shooting_star')
+            df['three_white_soldiers'] = detect_candle_patterns(df).count('three_white_soldiers')
+            df['three_black_crows'] = detect_candle_patterns(df).count('three_black_crows')
+
+            # Select features for ML
+            features = [
+                'rsi', 'macd', 'macd_signal', 'atr', 'adx', 'volume_sma_20',
+                'bollinger_upper', 'bollinger_lower', 'stoch_k', 'vwap',
+                'bullish_engulfing', 'bearish_engulfing', 'doji', 'hammer',
+                'shooting_star', 'three_white_soldiers', 'three_black_crows'
+            ]
+            X = df[features].iloc[-1:].values
+            return X
+        except Exception as e:
+            logger.error(f"[{symbol}] Error preparing ML features: {str(e)}")
+            return None
+
+    # Classify trade type (from trade_classifier.py)
+    def classify_trade(self, confidence: float) -> str:
+        # Classify trade as Normal or Scalping based on confidence
+        try:
+            if confidence >= 85:
+                trade_type = "Normal"
+            else:
+                trade_type = "Scalping"
+            logger.info(f"Trade classified as {trade_type} with confidence {confidence:.2f}")
+            return trade_type
+        except Exception as e:
+            logger.error(f"Error classifying trade: {str(e)}")
+            return "Scalping"
+
+    # Predict signal using rule-based and ML logic
     async def predict_signal(self, symbol: str, df: pd.DataFrame, timeframe: str) -> dict:
         try:
             if df is None or len(df) < self.min_data_points:
@@ -37,29 +101,28 @@ class SignalPredictor:
                 return None
 
             df = df.copy()
+            # Calculate indicators and additional features
             logger.info(f"[{symbol}] Calculating indicators for {timeframe}")
             df = calculate_indicators(df)
             logger.info(f"[{symbol}] Calculating Fibonacci levels for {timeframe}")
-            df = calculate_fibonacci_levels(df)
+            df = calculate_fibonacci_levels(df, timeframe)
             logger.info(f"[{symbol}] Calculating support/resistance for {timeframe}")
             sr_levels = calculate_support_resistance(symbol, df)
 
             latest = df.iloc[-1]
             conditions = []
-            logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.4f}, MACD Signal: {latest['macd_signal']:.4f}, ADX: {latest['adx']:.2f}, Close: {latest['close']:.2f}")
+            # Evaluate rule-based conditions
+            logger.info(f"[{symbol}] {timeframe} - RSI: {latest['rsi']:.2f}, MACD: {latest['macd']:.4f}, ADX: {latest['adx']:.2f}")
 
-            if latest['rsi'] < 25:  # Updated RSI threshold
+            if latest['rsi'] < 30:
                 conditions.append("Oversold RSI")
-            elif latest['rsi'] > 75:  # Updated RSI threshold
+            elif latest['rsi'] > 70:
                 conditions.append("Overbought RSI")
 
-            if abs(latest['macd']) < 1e-5:
-                logger.warning(f"[{symbol}] MACD near zero, relying on RSI/ADX")
-            else:
-                if latest['macd'] > latest['macd_signal'] and latest['macd'] > 0:
-                    conditions.append("Bullish MACD")
-                elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
-                    conditions.append("Bearish MACD")
+            if latest['macd'] > latest['macd_signal'] and latest['macd'] > 0:
+                conditions.append("Bullish MACD")
+            elif latest['macd'] < latest['macd_signal'] and latest['macd'] < 0:
+                conditions.append("Bearish MACD")
 
             if latest['adx'] > 25:
                 conditions.append("Strong Trend")
@@ -69,39 +132,12 @@ class SignalPredictor:
             elif latest['close'] < latest['bollinger_lower']:
                 conditions.append("Below Bollinger Lower")
 
-            if latest['stoch_k'] < 20 and latest['stoch_k'] < latest['stoch_d']:
-                conditions.append("Oversold Stochastic")
-            elif latest['stoch_k'] > 80 and latest['stoch_k'] > latest['stoch_d']:
-                conditions.append("Overbought Stochastic")
-
-            if latest['close'] > latest['vwap']:
-                conditions.append("Above VWAP")
-            elif latest['close'] < latest['vwap']:
-                conditions.append("Below VWAP")
-
-            if is_bullish_engulfing(df).iloc[-1]:
-                conditions.append("Bullish Engulfing")
-            if is_bearish_engulfing(df).iloc[-1]:
-                conditions.append("Bearish Engulfing")
-            if is_doji(df).iloc[-1]:
-                conditions.append("Doji")
-            if is_hammer(df).iloc[-1]:
-                conditions.append("Hammer")
-            if is_shooting_star(df).iloc[-1]:
-                conditions.append("Shooting Star")
-            if is_three_white_soldiers(df).iloc[-1]:
-                conditions.append("Three White Soldiers")
-            if is_three_black_crows(df).iloc[-1]:
-                conditions.append("Three Black Crows")
+            patterns = detect_candle_patterns(df)
+            conditions.extend(patterns)
 
             current_price = latest['close']
             support = sr_levels['support']
             resistance = sr_levels['resistance']
-            min_sr_gap = current_price * 0.01
-            if abs(resistance - support) < min_sr_gap:
-                support -= min_sr_gap / 2
-                resistance += min_sr_gap / 2
-                logger.info(f"[{symbol}] Adjusted support/resistance: Support={support:.2f}, Resistance={resistance:.2f}")
             if abs(current_price - support) / current_price < 0.05:
                 conditions.append("Near Support")
             if abs(current_price - resistance) / current_price < 0.05:
@@ -110,14 +146,15 @@ class SignalPredictor:
             if 'volume_sma_20' in latest and latest['volume'] > latest['volume_sma_20'] * 1.2:
                 conditions.append("High Volume")
 
-            logger.info(f"[{symbol}] {timeframe} - Conditions: {', '.join(conditions) if conditions else 'None'}")
+            logger.info(f"[{symbol}] Conditions: {', '.join(conditions) if conditions else 'None'}")
 
+            # Rule-based confidence calculation
             confidence = 50.0
             weights = []
             if "Bullish MACD" in conditions or "Bearish MACD" in conditions:
                 confidence += 15.0
                 weights.append("MACD: +15")
-            if "Bullish Engulfing" in conditions or "Bearish Engulfing" in conditions or "Hammer" in conditions or "Shooting Star" in conditions:
+            if any(p in conditions for p in ['bullish_engulfing', 'bearish_engulfing', 'hammer', 'shooting_star']):
                 confidence += 12.0
                 weights.append("Candlestick: +12")
             if "Strong Trend" in conditions:
@@ -125,108 +162,96 @@ class SignalPredictor:
                 weights.append("ADX: +12")
             if "Near Support" in conditions or "Near Resistance" in conditions:
                 confidence += 8.0
-                weights.append("S/R: +8")
             if "High Volume" in conditions:
                 confidence += 8.0
-                weights.append("Volume: +8")
-            if "Oversold RSI" in conditions or "Overbought RSI" in conditions:
-                confidence += 8.0
-                weights.append("RSI: +8")
-            if "Three White Soldiers" in conditions or "Three Black Crows" in conditions:
-                confidence += 12.0
-                weights.append("Three Soldiers/Crows: +12")
-            if "Doji" in conditions:
-                confidence += 5.0
-                weights.append("Doji: +5")
-            if "Above Bollinger Upper" in conditions or "Below Bollinger Lower" in conditions:
-                confidence += 8.0
-                weights.append("Bollinger: +8")
-            if "Oversold Stochastic" in conditions or "Overbought Stochastic" in conditions:
-                confidence += 8.0
-                weights.append("Stochastic: +8")
-            if "Above VWAP" in conditions or "Below VWAP" in conditions:
-                confidence += 5.0
-                weights.append("VWAP: +5")
-
             confidence = min(confidence, 95.0)
-            logger.info(f"[{symbol}] {timeframe} - Confidence: {confidence:.2f}, Weights: {', '.join(weights) if weights else 'None'}")
+            logger.info(f"[{symbol}] Rule-based confidence: {confidence:.2f}")
 
+            # ML prediction
+            ml_confidence = 0.0
+            ml_direction = None
+            if self.ml_model:
+                X_ml = self.prepare_ml_features(df, symbol)
+                if X_ml is not None:
+                    try:
+                        ml_pred = self.ml_model.predict_proba(X_ml)[0]
+                        ml_direction = "LONG" if ml_pred[0] > ml_pred[1] else "SHORT"
+                        ml_confidence = max(ml_pred) * 100
+                        logger.info(f"[{symbol}] ML prediction: {ml_direction}, Confidence: {ml_confidence:.2f}%")
+                    except Exception as e:
+                        logger.error(f"[{symbol}] ML prediction error: {str(e)}")
+
+            # Combine rule-based and ML predictions
             direction = None
-            bullish_conditions = ["Bullish MACD", "Oversold RSI", "Bullish Engulfing", "Hammer", "Near Support", "Three White Soldiers", "Below Bollinger Lower", "Oversold Stochastic", "Above VWAP"]
-            bearish_conditions = ["Bearish MACD", "Overbought RSI", "Bearish Engulfing", "Shooting Star", "Near Resistance", "Three Black Crows", "Above Bollinger Upper", "Overbought Stochastic", "Below VWAP"]
-            bullish_count = sum(1 for c in conditions if c in bullish_conditions)
-            bearish_count = sum(1 for c in conditions if c in bearish_conditions)
+            final_confidence = confidence
+            if ml_confidence >= 70.0 and ml_direction:
+                direction = ml_direction
+                final_confidence = (ml_confidence + confidence) / 0.2
+                logger.info(f"[{symbol}] Using ML prediction: {direction}, Combined Confidence: {final_confidence:.2f}%")
+            else:
+                bullish_conditions = ['bullish_engulfing', 'Oversold RSI', 'Bullish MACD', 'hammer', 'three_white_soldiers']
+                bearish_conditions = ['bearish_engulfing', 'Overbought RSI', 'Bearish MACD', 'shooting_star', 'three_black_crows']
+                bullish_count = sum(1 for c in conditions if c in bullish_conditions)
+                bearish_count = sum(1 for c in conditions if c in bearish_conditions)
 
-            if bullish_count > bearish_count and confidence >= 70 and len(conditions) >= 2:  # Updated confidence threshold
-                direction = "LONG"
-            elif bearish_count > bullish_count and confidence >= 70 and len(conditions) >= 2:  # Updated confidence threshold
-                direction = "SHORT"
+                if bullish_count > bearish_count and confidence >= 70:
+                    direction = "LONG"
+                elif bearish_count > bullish_count and confidence >= 70:
+                    direction = "SHORT"
+                logger.info(f"[{symbol}] Using rule-based prediction: {direction}, Confidence: {confidence:.2f}%")
 
             if not direction:
-                logger.info(f"[{symbol}] No clear direction: Bullish={bullish_count}, Bearish={bearish_count}, Confidence={confidence:.2f}, Conditions={len(conditions)}")
+                logger.warning(f"[{symbol}] No clear direction found")
                 return None
 
-            atr = max(latest.get('atr', 0.005 * current_price), 0.02 * current_price)
-            entry = round(current_price, 2)
+            # Calculate TP/SL
+            atr = max(latest.get('atr', 0.005 * current_price), 0.002 * current_price)
+            entry_price = round(current_price, 2)
             if direction == "LONG":
-                tp1 = round(entry + max(0.01 * entry, 0.75 * atr), 2)
-                tp2 = round(entry + max(0.015 * entry, 1.5 * atr), 2)
-                tp3 = round(entry + max(0.02 * entry, 2.5 * atr), 2)
-                sl = round(entry - max(0.008 * entry, 1.0 * atr), 2)
+                tp1 = round(entry_price + max(0.01 * entry_price, 0.75 * atr), 2)
+                tp2 = round(entry_price + max(0.015 * entry_price, 1.5 * atr), 2)
+                tp3 = round(entry_price + max(0.02 * entry_price, 2.5 * atr), 2)
+                sl = round(entry_price - 50 * atr, 2)
             else:
-                tp1 = round(entry - max(0.01 * entry, 0.75 * atr), 2)
-                tp2 = round(entry - max(0.015 * entry, 1.5 * atr), 2)
-                tp3 = round(entry - max(0.02 * entry, 2.5 * atr), 2)
-                sl = round(entry + max(0.008 * entry, 1.0 * atr), 2)
+                tp1 = round(entry_price - max(0.01 * entry_price, 0.75 * atr), 2)
+                tp2 = round(entry_price - max(0.015 * entry_price, 1.5 * atr), 2)
+                tp3 = round(entry_price - max(0.02 * entry_price, 2.5 * atr), 2)
+                sl = round(entry_price + 50 * atr, 2)
 
-            # Additional check for duplicate TP/SL
-            if tp1 == tp2 or tp2 == tp3 or tp1 == entry or sl == entry:
-                logger.warning(f"[{symbol}] Invalid TP/SL values, adjusting")
-                if direction == "LONG":
-                    tp1 = round(entry + 0.015 * entry, 2)
-                    tp2 = round(entry + 0.025 * entry, 2)
-                    tp3 = round(entry + 0.035 * entry, 2)
-                    sl = round(entry - 0.01 * entry, 2)
-                else:
-                    tp1 = round(entry - 0.015 * entry, 2)
-                    tp2 = round(entry - 0.025 * entry, 2)
-                    tp3 = round(entry - 0.035 * entry, 2)
-                    sl = round(entry + 0.01 * entry, 2)
+            # Adjust TP for stablecoin pairs
+            tp1, tp2, tp3 = adjust_tp_for_stablecoin(symbol, tp1, tp2, tp3, entry_price)
 
-            tp1_percent = abs(tp1 - entry) / entry * 100
-            if not (1.0 <= tp1_percent <= 2.0):
-                logger.warning(f"[{symbol}] TP1 out of 1-2% range ({tp1_percent:.2f}%), adjusting")
-                tp1 = round(entry + 0.015 * entry if direction == "LONG" else entry - 0.015 * entry, 2)
+            # Calculate TP probabilities
+            probabilities, prices = calculate_tp_probabilities_and_prices(conditions, entry_price, atr)
+            tp1_possibility, tp2_possibility, tp3_possibility = self.calculate_tp_hit_possibilities(symbol, direction, entry_price, prices['TP1'], prices['TP2'], prices['TP3'])
 
-            tp1_possibility, tp2_possibility, tp3_possibility = self.calculate_tp_hit_possibilities(symbol, direction, entry, tp1, tp2, tp3)
+            # Classify trade type
+            trade_type = self.classify_trade(final_confidence)
 
-            trade_type = classify_trade(confidence) or "Scalping"
-
+            # Prepare signal dictionary
             signal = {
                 'symbol': symbol,
                 'direction': direction,
-                'entry': float(entry),
-                'confidence': float(confidence),
+                'entry': float(entry_price),
+                'confidence': float(final_confidence),
                 'timeframe': timeframe,
                 'conditions': conditions,
-                'tp1': float(tp1),
-                'tp2': float(tp2),
-                'tp3': float(tp3),
+                'tp1': float(prices['TP1']),
+                'tp2': float(prices['TP2']),
+                'tp3': float(prices['TP3']),
                 'sl': float(sl),
-                'tp1_possibility': float(tp1_possibility),
-                'tp2_possibility': float(tp2_possibility),
-                'tp3_possibility': float(tp3_possibility),
+                'tp1_possibility': float(probabilities['TP1']),
+                'tp2_possibility': float(probabilities['TP2']),
+                'tp3_possibility': float(probabilities['TP3']),
                 'volume': float(latest['volume']),
                 'trade_type': trade_type,
                 'trade_duration': self.get_trade_duration(timeframe),
                 'timestamp': pd.Timestamp.now().isoformat(),
-                'atr': float(atr),
-                'leverage': determine_leverage(conditions)  # Added leverage
+                'atr': float(atr)
             }
 
-            logger.info(f"[{symbol}] Signal generated for {timeframe}: {direction}, Confidence: {signal['confidence']:.2f}%, TP1: {signal['tp1']:.2f} ({signal['tp1_possibility']:.2f}%)")
+            logger.info(f"[{symbol}] Signal generated: {direction}, Entry: ${entry_price:.2f}, Confidence: {final_confidence:.2f}%")
             return signal
-
         except Exception as e:
-            logger.error(f"[{symbol}] Error predicting signal for {timeframe}: {str(e)}")
+            logger.error(f"Error in predict_signal for {str(e)}")
             return None
