@@ -43,7 +43,7 @@ WEBHOOK_URL = "https://willowy-zorina-individual-personal-384d3443.koyeb.app/web
 MIN_VOLUME = 2_000_000  # 2 million USD
 MAX_SIGNALS_PER_MINUTE = 1
 CYCLE_INTERVAL = 1200  # 20 minutes
-BATCH_SIZE = 20
+BATCH_SIZE = 5
 COOLDOWN = 6 * 3600  # 6 hours
 SIGNAL_TIME_FILE = "last_signal_times.json"
 
