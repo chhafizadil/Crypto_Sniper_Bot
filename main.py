@@ -232,7 +232,7 @@ async def process_signal(symbol, exchange):
             return None
 
         predictor = SignalPredictor()
-        ohlcv = await fetch_realtime_data(symbol, '15m', limit=100)
+        ohlcv = await fetch_realtime_data(symbol, '15m', limit=50)
         if ohlcv is None or len(ohlcv) < 30:
             logger.warning(f"[{symbol}] Insufficient data")
             return None
