@@ -5,6 +5,7 @@
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Added detailed error logging for debugging
 # Limited to 10 high-volume USDT pairs
+# Fixed SyntaxError in help function (line 140)
 
 import telegram
 import asyncio
@@ -22,14 +23,14 @@ import json
 from model.predictor import SignalPredictor
 from telebot.sender import send_signal, update_signal_log
 from data.collector import fetch_realtime_data
-from core.indicators import calculate_tp_probabilities_and_indicators, adjust_tp_for_stablecoin
-from telebot.report_generator import generate_daily_report
+from core.indicators import calculate_tp_probabilities_and_prices, adjust_tp_for_stablecoin
+from telebot.report_generator import generate_daily_summary
 import ccxt.async_support as ccxt
 from typing import Set, Dict
 
 # Load environment variables
 load_dotenv()
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7620836100:AAGY7xBjMJMKlzrDDMrQ5hblXzd_k_BvEtU')
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7620836100:AAGY7xBjNJMKlzrDDMrQ5hblXzd_k_BvEtU')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '-4694205383')
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
@@ -43,7 +44,7 @@ SIGNAL_TIME_FILE = 'logs/last_signal_times.json'
 
 # Track scanned symbols and signal times
 scanned_symbols: Set[str] = set()
-last_signal_times: Dict[str, datetime] = {}
+last_signal_time: Dict[str, datetime] = {}
 
 def load_signal_times():
     # Load last signal times from JSON file
@@ -60,11 +61,11 @@ def save_signal_times():
     # Save last signal times to JSON file
     try:
         with open(SIGNAL_TIME_FILE, 'w') as f:
-            json.dump({k: v.isoformat() for k, v in last_signal_times.items()}, f)
+            json.dump({k: v.isoformat() for k, v in last_signal_time.items()}, f)
     except Exception as e:
         logger.error(f"Error saving signal times: {str(e)}")
 
-def format_timestamp_to_pakistan(utc_timestamp_str):
+def format_timestamp_to_pk(utc_timestamp_str):
     # Convert UTC timestamp to Pakistan time
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00').split('+00:00+')[0])
@@ -108,7 +109,7 @@ async def fetch_usdt_pairs(exchange):
     try:
         markets = await exchange.load_markets()
         symbols = [symbol for symbol in markets if symbol.endswith('USDT')]
-        symbols = [s for s in symbols if get_24h[s][0] > 10_000_000][:10]  # Limit to top 10
+        symbols = [s for s in symbols if get_24h_volume(s)[0] > 10_000_000][:10]  # Limit to top 10
         logger.info(f"Found {len(symbols)} USDT pairs")
         return symbols
     except Exception as e:
@@ -128,7 +129,7 @@ async def help(update, context):
     # Handle /help command
     try:
         help_text = (
-            '📖 Crypto Signal Bot Commands\n'
+            '📚 Crypto Signal Bot Commands\n'
             '/start - Start bot\n'
             '/summary - Today\'s signal summary\n'
             '/report - Detailed daily trading report\n'
@@ -137,7 +138,8 @@ async def help(update, context):
             '/test - Test bot connectivity\n'
             '/help - This help message'
         )
-        await update.message.reply_text('''help_text', parse_mode='Markdown')
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+        logger.info('Help command executed')
     except Exception as e:
         logger.error(f"Error in help command: {str(e)}")
 
@@ -190,7 +192,7 @@ async def signal(update, context):
 
         latest_signal['leverage'] = determine_leverage(latest_signal['conditions'])
         latest_signal['quote_volume_24h'] = volume_str
-        latest_signal['timestamp'] = format_timestamp_to_pakistan(latest_signal['timestamp'])
+        latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
 
         message = (
             f"📈 Trading Signal\n"
@@ -220,7 +222,7 @@ async def signal(update, context):
 async def summary(update, context):
     # Handle /summary command
     try:
-        report = await generate_daily_report()
+        report = await generate_daily_summary()
         if report:
             await update.message.reply_text(report, parse_mode='Markdown')
         else:
@@ -232,7 +234,7 @@ async def summary(update, context):
 async def report(update, context):
     # Handle /report command
     try:
-        report = await generate_daily_report()
+        report = await generate_daily_summary()
         if report:
             await update.message.reply_text(report, parse_mode='Markdown')
         else:
@@ -245,7 +247,7 @@ async def process_signal(symbol, exchange):
     # Process trading signal for a symbol
     try:
         current_time = datetime.now(pytz.UTC)
-        if symbol in last_signal_times and (current_time - last_signal_times[symbol]).total_seconds() < COOLDOWN:
+        if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < COOLDOWN:
             logger.info(f"Skipping {symbol}: Signal sent within last 6 hours")
             return None
 
@@ -278,7 +280,7 @@ async def process_signal(symbol, exchange):
 async def start_bot():
     # Start Telegram bot and signal scanning loop
     os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
-    global last_signal_times
+    global last_signal_time
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
@@ -305,7 +307,7 @@ async def start_bot():
             'enableRateLimit': True,
         })
 
-        last_signal_times = {k: datetime.fromisoformat(v) for k, v in load_signal_times().items()}
+        last_signal_time = {k: datetime.fromisoformat(v) for k, v in load_signal_times().items()}
         signal_count = 0
         last_signal_minute = (datetime.now(pytz.UTC).timestamp() // 60)
 
@@ -341,7 +343,7 @@ async def start_bot():
                     current_time = datetime.now(pytz.UTC)
                     scanned_symbols.clear()
                     scanned_symbols.update(
-                        s for s in symbols if s in last_signal_times and (current_time - last_signal_times[s]).total_seconds() < COOLDOWN
+                        s for s in symbols if s in last_signal_time and (current_time - last_signal_time[s]).total_seconds() < COOLDOWN
                     )
                     logger.info('Completed scan cycle, retaining cooldown symbols')
 
