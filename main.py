@@ -1,11 +1,10 @@
 # main.py
-# Simplified Telegram Bot script for Koyeb deployment without FastAPI or gunicorn
-# Reverted to original webhook setup using python-telegram-bot for reliability
+# Simplified Telegram Bot script for Koyeb deployment without FastAPI
+# Reverted to original webhook setup using python-telegram-bot
+# Added minimal aiohttp server for /health endpoint to pass Koyeb health check
 # Retained batch scanning, cooldown, volume checks, and ML predictions
 # Optimized memory usage for Koyeb free tier (512MB RAM)
-# Added detailed error logging for debugging
 # Limited to 10 high-volume USDT pairs
-# Fixed SyntaxError in help function (line 140)
 
 import telegram
 import asyncio
@@ -27,6 +26,7 @@ from core.indicators import calculate_tp_probabilities_and_prices, adjust_tp_for
 from telebot.report_generator import generate_daily_summary
 import ccxt.async_support as ccxt
 from typing import Set, Dict
+from aiohttp import web
 
 # Load environment variables
 load_dotenv()
@@ -277,10 +277,30 @@ async def process_signal(symbol, exchange):
         logger.error(f"Error processing signal for {symbol}: {str(e)}")
         return None
 
+async def handle_health(request):
+    # Handle /health endpoint for Koyeb health check
+    return web.json_response({'status': 'healthy'}, status=200)
+
+async def handle_webhook(request):
+    # Handle Telegram webhook updates
+    try:
+        data = await request.json()
+        logger.info(f"Received webhook update: {data}")
+        update = telegram.Update.de_json(data, bot=telegram.Bot(token=BOT_TOKEN))
+        if update:
+            await application.process_update(update)
+            logger.info('Webhook update processed')
+        else:
+            logger.error('Invalid webhook update')
+        return web.json_response({'status': 'ok'}, status=200)
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
+        return web.json_response({'error': str(e)}, status=400)
+
 async def start_bot():
-    # Start Telegram bot and signal scanning loop
+    # Start Telegram bot, aiohttp server, and signal scanning loop
     os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
-    global last_signal_time
+    global last_signal_time, application
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
@@ -289,6 +309,7 @@ async def start_bot():
         logger.info(f"Webhook set: {WEBHOOK_URL}")
         await bot.send_message(chat_id=CHAT_ID, text='Bot started successfully!')
 
+        # Initialize Telegram application
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler('start', start))
         application.add_handler(CommandHandler('summary', summary))
@@ -300,6 +321,16 @@ async def start_bot():
         await application.initialize()
         await application.start()
         logger.info('Telegram webhook bot started')
+
+        # Set up aiohttp server for health check and webhook
+        app = web.Application()
+        app.add_routes([web.get('/health', handle_health)])
+        app.add_routes([web.post('/webhook', handle_webhook)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 8000)
+        await site.start()
+        logger.info('aiohttp server started on port 8000')
 
         exchange = ccxt.binance({
             'apiKey': API_KEY,
@@ -360,5 +391,5 @@ async def start_bot():
         raise
 
 if __name__ == '__main__':
-    # Run bot directly
+    # Start bot and server
     asyncio.run(start_bot())
