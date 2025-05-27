@@ -70,7 +70,7 @@ async def process_symbol(exchange: ccxt.binance, symbol: str) -> Dict:
         timeframes = ['15m', '1h', '4h', '1d']
         ohlcv_data = []
         for tf in timeframes:
-            ohlcv = await fetch_realtime_data(symbol, tf, limit=100)
+            ohlcv = await fetch_realtime_data(symbol, tf, limit=50)
             if ohlcv is None or len(ohlcv) < 30:
                 logger.warning(f"[{symbol}] Insufficient data for {tf}")
                 return None
