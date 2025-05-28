@@ -1,7 +1,7 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
 # Uses python-telegram-bot for webhook and aiohttp for health check
-# Enhanced /health endpoint to handle various response formats and detailed logging
+# Enhanced logging for all incoming requests to debug health check
 # Retained batch scanning, cooldown, volume checks, and ML predictions
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
@@ -205,7 +205,7 @@ async def signal(update, context):
             f"🎯 TP2: ${latest_signal['tp2']:.2f} ({latest_signal['tp2_possibility']:.2f}%)\n"
             f"🎯 TP3: ${latest_signal['tp3']:.2f} ({latest_signal['tp3_possibility']:.2f}%)\n"
             f"🛑 SL: ${latest_signal['sl']:.2f}\n"
-            f"🔍 Confidence: {latest_signal['confidence']:.2f}%\n"
+            f"🔍 Confidence: ${latest_signal['confidence']:.2f}%\n"
             f"⚡ Type: {latest_signal['trade_type']}\n"
             f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}\n"
             f"📈 Combined Candle Volume: ${latest_signal['volume']:,.2f}\n"
@@ -278,14 +278,14 @@ async def process_signal(symbol, exchange):
         return None
 
 async def handle_health(request):
-    # Handle /health endpoint for Koyeb health check with multiple response formats
-    logger.info(f"Health check requested: path={request.path}, headers={dict(request.headers)}")
-    # Return simple 200 OK with text for compatibility
+    # Handle /health endpoint for Koyeb health check
+    logger.info(f"Health check requested: path={request.path}, method={request.method}, headers={dict(request.headers)}")
     return web.Response(status=200, text='OK')
 
 async def handle_webhook(request):
     # Handle Telegram webhook updates
     try:
+        logger.info(f"Webhook requested: path={request.path}, method={request.method}")
         data = await request.json()
         logger.info(f"Received webhook update: {data}")
         update = telegram.Update.de_json(data, bot=telegram.Bot(token=BOT_TOKEN))
@@ -299,16 +299,22 @@ async def handle_webhook(request):
         logger.error(f"Webhook error: {str(e)}")
         return web.json_response({'error': str(e)}, status=400)
 
+async def handle_any(request):
+    # Catch-all handler for debugging
+    logger.info(f"Unknown request: path={request.path}, method={request.method}, headers={dict(request.headers)}")
+    return web.Response(status=200, text='OK')
+
 async def start_bot():
     # Start aiohttp server, Telegram bot, and signal scanning loop
     global last_signal_time, application
     os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
     try:
-        # Set up aiohttp server first
+        # Set up aiohttp server
         app = web.Application()
         app.add_routes([web.get('/health', handle_health)])
-        app.add_routes([web.get('/', handle_health)])  # Fallback for root path
+        app.add_routes([web.get('/', handle_health)])
         app.add_routes([web.post('/webhook', handle_webhook)])
+        app.add_routes([web.route('*', '/{tail:.*}', handle_any)])  # Catch-all route
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', 8000)
