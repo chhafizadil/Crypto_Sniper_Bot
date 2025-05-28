@@ -1,7 +1,7 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
-# Reverted to original webhook setup using python-telegram-bot
-# Added minimal aiohttp server for /health endpoint to pass Koyeb health check
+# Uses python-telegram-bot for webhook and aiohttp for health check
+# Fixed health check issue by simplifying /health response and adding logging
 # Retained batch scanning, cooldown, volume checks, and ML predictions
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
@@ -279,7 +279,8 @@ async def process_signal(symbol, exchange):
 
 async def handle_health(request):
     # Handle /health endpoint for Koyeb health check
-    return web.json_response({'status': 'healthy'}, status=200)
+    logger.info('Health check requested')
+    return web.Response(status=200, text='OK')
 
 async def handle_webhook(request):
     # Handle Telegram webhook updates
@@ -298,10 +299,21 @@ async def handle_webhook(request):
         return web.json_response({'error': str(e)}, status=400)
 
 async def start_bot():
-    # Start Telegram bot, aiohttp server, and signal scanning loop
-    os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
+    # Start aiohttp server, Telegram bot, and signal scanning loop
     global last_signal_time, application
+    os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
     try:
+        # Set up aiohttp server first
+        app = web.Application()
+        app.add_routes([web.get('/health', handle_health)])
+        app.add_routes([web.post('/webhook', handle_webhook)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 8000)
+        await site.start()
+        logger.info('aiohttp server started on port 8000')
+
+        # Initialize Telegram bot
         bot = telegram.Bot(token=BOT_TOKEN)
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info('Telegram webhook removed')
@@ -321,16 +333,6 @@ async def start_bot():
         await application.initialize()
         await application.start()
         logger.info('Telegram webhook bot started')
-
-        # Set up aiohttp server for health check and webhook
-        app = web.Application()
-        app.add_routes([web.get('/health', handle_health)])
-        app.add_routes([web.post('/webhook', handle_webhook)])
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', 8000)
-        await site.start()
-        logger.info('aiohttp server started on port 8000')
 
         exchange = ccxt.binance({
             'apiKey': API_KEY,
