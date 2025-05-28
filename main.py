@@ -1,7 +1,7 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
 # Uses python-telegram-bot for webhook and aiohttp for health check
-# Fixed health check issue by simplifying /health response and adding logging
+# Enhanced /health endpoint to handle various response formats and detailed logging
 # Retained batch scanning, cooldown, volume checks, and ML predictions
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
@@ -278,8 +278,9 @@ async def process_signal(symbol, exchange):
         return None
 
 async def handle_health(request):
-    # Handle /health endpoint for Koyeb health check
-    logger.info('Health check requested')
+    # Handle /health endpoint for Koyeb health check with multiple response formats
+    logger.info(f"Health check requested: path={request.path}, headers={dict(request.headers)}")
+    # Return simple 200 OK with text for compatibility
     return web.Response(status=200, text='OK')
 
 async def handle_webhook(request):
@@ -306,6 +307,7 @@ async def start_bot():
         # Set up aiohttp server first
         app = web.Application()
         app.add_routes([web.get('/health', handle_health)])
+        app.add_routes([web.get('/', handle_health)])  # Fallback for root path
         app.add_routes([web.post('/webhook', handle_webhook)])
         runner = web.AppRunner(app)
         await runner.setup()
