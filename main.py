@@ -1,7 +1,7 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
 # Uses python-telegram-bot for webhook and aiohttp for health check
-# Enhanced logging for all incoming requests to debug health check
+# Optimized health check for faster response and added error logging
 # Retained batch scanning, cooldown, volume checks, and ML predictions
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
@@ -279,8 +279,12 @@ async def process_signal(symbol, exchange):
 
 async def handle_health(request):
     # Handle /health endpoint for Koyeb health check
-    logger.info(f"Health check requested: path={request.path}, method={request.method}, headers={dict(request.headers)}")
-    return web.Response(status=200, text='OK')
+    try:
+        logger.info(f"Health check requested: path={request.path}, method={request.method}, headers={dict(request.headers)}")
+        return web.Response(status=200, text='OK')
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return web.Response(status=500, text='Internal Server Error')
 
 async def handle_webhook(request):
     # Handle Telegram webhook updates
@@ -299,11 +303,6 @@ async def handle_webhook(request):
         logger.error(f"Webhook error: {str(e)}")
         return web.json_response({'error': str(e)}, status=400)
 
-async def handle_any(request):
-    # Catch-all handler for debugging
-    logger.info(f"Unknown request: path={request.path}, method={request.method}, headers={dict(request.headers)}")
-    return web.Response(status=200, text='OK')
-
 async def start_bot():
     # Start aiohttp server, Telegram bot, and signal scanning loop
     global last_signal_time, application
@@ -314,12 +313,13 @@ async def start_bot():
         app.add_routes([web.get('/health', handle_health)])
         app.add_routes([web.get('/', handle_health)])
         app.add_routes([web.post('/webhook', handle_webhook)])
-        app.add_routes([web.route('*', '/{tail:.*}', handle_any)])  # Catch-all route
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', 8000)
         await site.start()
         logger.info('aiohttp server started on port 8000')
+        # Delay to ensure server is fully up
+        await asyncio.sleep(2)
 
         # Initialize Telegram bot
         bot = telegram.Bot(token=BOT_TOKEN)
