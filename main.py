@@ -1,8 +1,8 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
 # Uses python-telegram-bot for webhook and aiohttp for health check
-# Optimized health check for faster response and added error logging
-# Retained batch scanning, cooldown, volume checks, and ML predictions
+# Increased server startup delay for health check stability
+# Enhanced Binance API error handling
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
 
@@ -47,7 +47,6 @@ scanned_symbols: Set[str] = set()
 last_signal_time: Dict[str, datetime] = {}
 
 def load_signal_times():
-    # Load last signal times from JSON file
     try:
         if os.path.exists(SIGNAL_TIME_FILE):
             with open(SIGNAL_TIME_FILE, 'r') as f:
@@ -58,7 +57,6 @@ def load_signal_times():
         return {}
 
 def save_signal_times():
-    # Save last signal times to JSON file
     try:
         with open(SIGNAL_TIME_FILE, 'w') as f:
             json.dump({k: v.isoformat() for k, v in last_signal_time.items()}, f)
@@ -66,7 +64,6 @@ def save_signal_times():
         logger.error(f"Error saving signal times: {str(e)}")
 
 def format_timestamp_to_pk(utc_timestamp_str):
-    # Convert UTC timestamp to Pakistan time
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00').split('+00:00+')[0])
         utc_time = utc_time.replace(tzinfo=pytz.UTC)
@@ -77,7 +74,6 @@ def format_timestamp_to_pk(utc_timestamp_str):
         return utc_timestamp_str
 
 def determine_leverage(indicators):
-    # Determine leverage based on indicator signals
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(', ')
@@ -92,7 +88,6 @@ def determine_leverage(indicators):
     return '40x' if score >= 5 else '30x' if score >= 3 else '20x' if score >= 1 else '10x'
 
 def get_24h_volume(symbol):
-    # Fetch 24-hour trading volume from Binance
     try:
         symbol_clean = symbol.replace('/', '').upper()
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
@@ -105,20 +100,19 @@ def get_24h_volume(symbol):
         return 0, '$0.00'
 
 async def fetch_usdt_pairs(exchange):
-    # Fetch high-volume USDT trading pairs from Binance
     try:
         markets = await exchange.load_markets()
         symbols = [symbol for symbol in markets if symbol.endswith('USDT')]
-        symbols = [s for s in symbols if get_24h_volume(s)[0] > 10_000_000][:10]  # Limit to top 10
+        symbols = [s for s in symbols if get_24h_volume(s)[0] > 10_000_000][:10]
         logger.info(f"Found {len(symbols)} USDT pairs")
         return symbols
     except Exception as e:
         logger.error(f"Error fetching USDT pairs: {str(e)}")
+        bot = telegram.Bot(token=BOT_TOKEN)
+        await bot.send_message(chat_id=CHAT_ID, text=f"⚠ Binance API Error: {str(e)}. Please check API keys.")
         return []
 
-# Telegram command handlers
 async def start(update, context):
-    # Handle /start command
     try:
         await update.message.reply_text('Crypto Signal Bot is running! Use /summary, /report, /status, /signal, or /help.')
         logger.info('Start command executed')
@@ -126,7 +120,6 @@ async def start(update, context):
         logger.error(f"Error in start command: {str(e)}")
 
 async def help(update, context):
-    # Handle /help command
     try:
         help_text = (
             '📚 Crypto Signal Bot Commands\n'
@@ -144,7 +137,6 @@ async def help(update, context):
         logger.error(f"Error in help command: {str(e)}")
 
 async def test(update, context):
-    # Handle /test command
     try:
         await update.message.reply_text('Test message from Crypto Signal Bot!')
         logger.info('Test message sent successfully')
@@ -153,7 +145,6 @@ async def test(update, context):
         await update.message.reply_text(f"Error sending test message: {str(e)}")
 
 async def status(update, context):
-    # Handle /status command
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         bot_info = await bot.get_me()
@@ -171,7 +162,6 @@ async def status(update, context):
         await update.message.reply_text('🔴 Bot status check failed.', parse_mode='Markdown')
 
 async def signal(update, context):
-    # Handle /signal command
     try:
         file_path = 'logs/signals_log.csv'
         if not os.path.exists(file_path):
@@ -220,7 +210,6 @@ async def signal(update, context):
         await update.message.reply_text('Error fetching latest signal.')
 
 async def summary(update, context):
-    # Handle /summary command
     try:
         report = await generate_daily_summary()
         if report:
@@ -232,7 +221,6 @@ async def summary(update, context):
         logger.error(f"Error in summary command: {str(e)}")
 
 async def report(update, context):
-    # Handle /report command
     try:
         report = await generate_daily_summary()
         if report:
@@ -244,7 +232,6 @@ async def report(update, context):
         logger.error(f"Error in report command: {str(e)}")
 
 async def process_signal(symbol, exchange):
-    # Process trading signal for a symbol
     try:
         current_time = datetime.now(pytz.UTC)
         if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < COOLDOWN:
@@ -257,12 +244,12 @@ async def process_signal(symbol, exchange):
             return None
 
         predictor = SignalPredictor()
-        ohlcv = await fetch_realtime_data(symbol, '15m', limit=50)  # Reduced for memory
+        ohlcv = await fetch_realtime_data(symbol, '15m', limit=50)
         if ohlcv is None or len(ohlcv) < 30:
             logger.warning(f"[{symbol}] Insufficient data")
             return None
 
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)  # Optimize memory
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)
         signal = await predictor.predict_signal(symbol, df, '15m')
         if not signal:
             logger.info(f"No signal generated for {symbol}")
@@ -278,7 +265,6 @@ async def process_signal(symbol, exchange):
         return None
 
 async def handle_health(request):
-    # Handle /health endpoint for Koyeb health check
     try:
         logger.info(f"Health check requested: path={request.path}, method={request.method}, headers={dict(request.headers)}")
         return web.Response(status=200, text='OK')
@@ -287,7 +273,6 @@ async def handle_health(request):
         return web.Response(status=500, text='Internal Server Error')
 
 async def handle_webhook(request):
-    # Handle Telegram webhook updates
     try:
         logger.info(f"Webhook requested: path={request.path}, method={request.method}")
         data = await request.json()
@@ -304,9 +289,8 @@ async def handle_webhook(request):
         return web.json_response({'error': str(e)}, status=400)
 
 async def start_bot():
-    # Start aiohttp server, Telegram bot, and signal scanning loop
     global last_signal_time, application
-    os.makedirs('logs', exist_ok=True)  # Ensure logs directory exists
+    os.makedirs('logs', exist_ok=True)
     try:
         # Set up aiohttp server
         app = web.Application()
@@ -318,8 +302,7 @@ async def start_bot():
         site = web.TCPSite(runner, '0.0.0.0', 8000)
         await site.start()
         logger.info('aiohttp server started on port 8000')
-        # Delay to ensure server is fully up
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)  # Increased delay for stability
 
         # Initialize Telegram bot
         bot = telegram.Bot(token=BOT_TOKEN)
@@ -342,6 +325,12 @@ async def start_bot():
         await application.start()
         logger.info('Telegram webhook bot started')
 
+        # Initialize Binance exchange
+        if not API_KEY or not API_SECRET:
+            logger.error("Binance API key or secret missing")
+            await bot.send_message(chat_id=CHAT_ID, text="⚠ Binance API key or secret missing. Please configure environment variables.")
+            return
+
         exchange = ccxt.binance({
             'apiKey': API_KEY,
             'secret': API_SECRET,
@@ -355,6 +344,11 @@ async def start_bot():
         while True:
             try:
                 symbols = await fetch_usdt_pairs(exchange)
+                if not symbols:
+                    logger.warning("No USDT pairs fetched, retrying in 60 seconds")
+                    await asyncio.sleep(60)
+                    continue
+
                 for i in range(0, len(symbols), BATCH_SIZE):
                     batch = symbols[i:i + BATCH_SIZE]
                     tasks = [process_signal(symbol, exchange) for symbol in batch if symbol not in scanned_symbols]
@@ -401,5 +395,4 @@ async def start_bot():
         raise
 
 if __name__ == '__main__':
-    # Start bot and server
     asyncio.run(start_bot())
