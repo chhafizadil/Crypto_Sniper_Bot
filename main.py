@@ -1,9 +1,8 @@
 # main.py
 # Simplified Telegram Bot script for Koyeb deployment without FastAPI
 # Uses python-telegram-bot for webhook and aiohttp for health check
-# Increased server startup delay to 10s for health check stability
-# Added detailed health check failure logging
-# Enhanced Binance API error handling
+# Increased server startup delay to 15s for health check stability
+# Enhanced health check logging to capture failures
 # Optimized memory usage for Koyeb free tier (512MB RAM)
 # Limited to 10 high-volume USDT pairs
 
@@ -303,7 +302,7 @@ async def start_bot():
         site = web.TCPSite(runner, '0.0.0.0', 8000)
         await site.start()
         logger.info('aiohttp server started on port 8000')
-        await asyncio.sleep(10)  # Increased delay for stability
+        await asyncio.sleep(15)  # Increased delay for stability
 
         # Initialize Telegram bot
         bot = telegram.Bot(token=BOT_TOKEN)
