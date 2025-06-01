@@ -1,9 +1,8 @@
 # Telegram bot for sending signals and tracking trades
-# Merged from: tracker.py
 # Changes:
-# - Integrated trade tracking from tracker.py
-# - Added signal status updates to CSV log
-# - Ensured async compatibility with Binance real-time data
+# - Moved track_trade to Google Cloud Tasks
+# - Enhanced logging for live trade status
+# - Ensured async compatibility with Binance data
 
 import asyncio
 import telegram
@@ -14,72 +13,51 @@ import os
 import ccxt.async_support as ccxt
 from datetime import datetime
 import pytz
+from google.cloud import tasks_v2
+from google.protobuf import duration_pb2
 
 # Load environment variables
 load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "crypto-sniper-bot")
+QUEUE_NAME = "trade-tracking-queue"
+LOCATION = "us-central1"
 
-# Track trade status (from tracker.py)
+# Initialize Cloud Tasks client
+try:
+    tasks_client = tasks_v2.CloudTasksClient()
+except Exception as e:
+    logger.error(f"Cloud Tasks initialization failed: {str(e)}")
+    tasks_client = None
+
+# Track trade status using Cloud Tasks
 async def track_trade(symbol: str, signal: dict):
-    # Track trade status (TP1/TP2/TP3/SL) for up to 3 hours
-    try:
-        exchange = ccxt.binance({
-            'enableRateLimit': True
-        })
-        direction = signal["direction"]
-        price = signal["entry"]
-        tp1 = signal["tp1"]
-        tp2 = signal["tp2"]
-        tp3 = signal["tp3"]
-        sl = signal["sl"]
-
-        status = "pending"
-        for _ in range(720):  # Check for ~3 hours (720 * 15s)
-            try:
-                ticker = await exchange.fetch_ticker(symbol)
-                current_price = ticker.get("last", 0.0)
-
-                if direction == "LONG":
-                    if current_price >= tp3:
-                        status = "tp3"
-                        break
-                    elif current_price >= tp2:
-                        status = "tp2"
-                    elif current_price >= tp1:
-                        status = "tp1"
-                    elif current_price <= sl:
-                        status = "sl"
-                        break
-                else:
-                    if current_price <= tp3:
-                        status = "tp3"
-                        break
-                    elif current_price <= tp2:
-                        status = "tp2"
-                    elif current_price <= tp1:
-                        status = "tp1"
-                    elif current_price >= sl:
-                        status = "sl"
-                        break
-            except Exception as e:
-                logger.error(f"[{symbol}] Error fetching ticker: {str(e)}")
-                continue
-
-            await asyncio.sleep(1)  # Check every 15 seconds
-
-        logger.info(f"[{symbol}] Trade status: {status}")
-        update_signal_status(symbol, signal, status)
-        await exchange.close()
-        return status
-    except Exception as e:
-        logger.error(f"[{symbol}] Error tracking trade: {str(e)}")
-        await exchange.close()
+    if not tasks_client:
+        logger.error(f"[{symbol}] Cloud Tasks not initialized")
         return "error"
 
-# Update signals log CSV (from tracker.py)
+    try:
+        parent = tasks_client.queue_path(PROJECT_ID, LOCATION, QUEUE_NAME)
+        task = {
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"https://{LOCATION}-{PROJECT_ID}.cloudfunctions.net/track_trade",
+                "body": json.dumps({"symbol": symbol, "signal": signal}).encode(),
+                "headers": {"Content-Type": "application/json"}
+            },
+            "schedule_time": None,
+            "dispatch_deadline": duration_pb2.Duration(seconds=3600)  # 1 hour
+        }
+        response = tasks_client.create_task(request={"parent": parent, "task": task})
+        logger.info(f"[{symbol}] Trade tracking task created: {response.name}")
+        return "pending"
+    except Exception as e:
+        logger.error(f"[{symbol}] Error creating tracking task: {str(e)}")
+        return "error"
+
+# Update signals log CSV
 def update_signal_log(symbol: str, signal: dict, status: str):
-    # Update signal status in signals_log.csv
     try:
         csv_path = "logs/signals_log.csv"
         data = pd.DataFrame({
@@ -103,13 +81,13 @@ def update_signal_log(symbol: str, signal: dict, status: str):
             df = data
 
         df.to_csv(csv_path, index=False)
+        save_csv_to_gcs(csv_path, "crypto-sniper-bot-logs", "signals/signals_log.csv")
         logger.info(f"[{symbol}] Signal log updated with status: {status}")
     except Exception as e:
         logger.error(f"[{symbol}] Error updating signal log: {str(e)}")
 
 # Send signal to Telegram
 async def send_signal(symbol: str, signal: dict, chat_id: str):
-    # Send trading signal to Telegram chat
     try:
         bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
         message = (
@@ -125,9 +103,10 @@ async def send_signal(symbol: str, signal: dict, chat_id: str):
             f"Trade Type: {signal.get('trade_type', 'N/A')}"
         )
         await bot.send_message(chat_id=chat_id, text=message)
-        logger.info(f"Signal sent successfully: {symbol} - {signal['direction']}")
+        logger.info(f"[{symbol}] Signal sent to Telegram")
 
         # Start tracking trade status
-        asyncio.create_task(track_trade(symbol, signal))
+        status = await track_trade(symbol, signal)
+        update_signal_log(symbol, signal, status)
     except Exception as e:
-        logger.error(f"Failed to send signal for {symbol}: {str(e)}")
+        logger.error(f"[{symbol}] Failed to send signal: {str(e)}")
