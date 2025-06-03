@@ -1,35 +1,44 @@
 # ML model training for RandomForestClassifier
-# Changes:
+# Fixes:
 # - Fixed detect_candle to detect_candle_patterns
-# - Reduced data limit to 1000 candles for real-time training
-# - Added Cloud Storage for model save/load
-# - Ensured compatibility with predictor.py
+# - Added missing json import
+# - Moved logger import after definition
+# - Reduced limit to 500 candles for Replit
+# - Made Cloud Storage optional for Replit
 
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from joblib import dump, load
-from utils.logger import logger
+import json
+import os
+import asyncio
 from core.indicators import calculate_indicators, detect_candle_patterns
 from data.collector import fetch_realtime_data
 import ccxt.async_support as ccxt
-import asyncio
-import os
-from google.cloud import storage
-
-# Initialize Cloud Storage client
 try:
-    storage_client = storage.Client()
-    BUCKET_NAME = "crypto-sniper-bot-models"
-    MODEL_PATH = "ml_models/rf_model.joblib"
-    GCS_MODEL_PATH = f"models/rf_model.joblib"
-except Exception as e:
-    logger.error(f"Cloud Storage initialization failed: {str(e)}")
-    storage_client = None
+    from google.cloud import storage
+except ImportError:
+    storage = None
 
-# Prepare training data for ML model
-async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int = 1000):
+# Logger setup
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Cloud Storage setup (optional for Replit)
+storage_client = None
+BUCKET_NAME = "crypto-sniper-bot-models"
+MODEL_PATH = "ml_models/rf_model.joblib"
+GCS_MODEL_PATH = "models/rf_model.joblib"
+if storage:
+    try:
+        storage_client = storage.Client()
+    except Exception as e:
+        logger.error(f"Cloud Storage initialization failed: {str(e)}")
+
+async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int = 500):
     try:
         ohlcv = await fetch_realtime_data(symbol, timeframe, limit)
         if ohlcv is None or len(ohlcv) < 360:
@@ -39,13 +48,11 @@ async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
 
-        # Add candle patterns
-        df['bullish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if 'bullish_engulfing' in x else 0)
-        df['bearish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if 'bearish_engulfing' in x else 0)
-        df['doji'] = detect_candle_patterns(df).apply(lambda x: 1 if 'doji' in x else 0)
-        df['hammer'] = detect_candle_patterns(df).apply(lambda x: 1 if 'hammer' in x else 0)
+        df['bullish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'bullish_engulfing' in x else 0)
+        df['bearish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'bearish_engulfing' in x else 0)
+        df['doji'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'doji' in x else 0)
+        df['hammer'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'hammer' in x else 0)
 
-        # Add labels (1 if TP1 hit, 0 otherwise)
         df["label"] = 0
         for i in range(len(df) - 10):
             future_highs = df["high"].iloc[i+1:i+11]
@@ -67,7 +74,6 @@ async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int 
         logger.error(f"[{symbol}] Error preparing training data: {str(e)}")
         return None, None
 
-# Save model to Cloud Storage
 def save_to_gcs(model, bucket_name, destination_blob_name):
     if storage_client:
         try:
@@ -79,7 +85,6 @@ def save_to_gcs(model, bucket_name, destination_blob_name):
         except Exception as e:
             logger.error(f"Error saving model to GCS: {str(e)}")
 
-# Load model from Cloud Storage
 def load_from_gcs(bucket_name, source_blob_name):
     if storage_client:
         try:
@@ -93,8 +98,7 @@ def load_from_gcs(bucket_name, source_blob_name):
             logger.error(f"Error loading model from GCS: {str(e)}")
     return None
 
-# Train ML model
-async def train_model(symbol: str, timeframe: str = '15m', limit: int = 1000):
+async def train_model(symbol: str, timeframe: str = '15m', limit: int = 500):
     try:
         X, y = await prepare_training_data(symbol, timeframe, limit)
         if X is None or y is None:
@@ -111,7 +115,7 @@ async def train_model(symbol: str, timeframe: str = '15m', limit: int = 1000):
         os.makedirs("ml_models", exist_ok=True)
         dump(model, MODEL_PATH)
         save_to_gcs(model, BUCKET_NAME, GCS_MODEL_PATH)
-        logger.info(f"[{symbol}] Model saved to {MODEL_PATH} and GCS")
+        logger.info(f"[{symbol}] Model saved to {MODEL_PATH}")
         return True
     except Exception as e:
         logger.error(f"[{symbol}] Error training model: {str(e)}")
