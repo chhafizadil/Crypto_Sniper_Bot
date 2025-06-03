@@ -1,8 +1,9 @@
 # Logging configuration for Crypto Signal Bot
-# Changes:
-# - Added Cloud Storage backup for signals_log_new.csv and archives
-# - Enhanced logging for live scan details
-# - Optimized CSV logging with PKT timezone
+# Fixes:
+# - Moved logger definition before usage
+# - Fixed pd.concat syntax
+# - Added json import
+# - Made Cloud Storage optional for Replit
 
 import os
 import logging
@@ -10,22 +11,19 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 import pandas as pd
 import pytz
-from google.cloud import storage
-
-# Initialize Cloud Storage client
+import json
 try:
-    storage_client = storage.Client()
-    BUCKET_NAME = "crypto-sniper-bot-logs"
-except Exception as e:
-    logger = logging.getLogger(__name__)
-    logger.error(f"Cloud Storage initialization failed: {str(e)}")
-    storage_client = None
+    from google.cloud import storage
+except ImportError:
+    storage = None
 
-# Ensure logs directory exists
+# Logger setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("crypto-signal-bot")
+
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Configure logger
 log_formatter = logging.Formatter(
     fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
@@ -40,13 +38,19 @@ console_handler = logging.StreamHandler()
 console_handler.setFormatter(log_formatter)
 console_handler.setLevel(logging.INFO)
 
-logger = logging.getLogger("crypto-signal-bot")
-logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 logger.propagate = False
 
-# Save CSV to Cloud Storage
+# Cloud Storage setup (optional for Replit)
+storage_client = None
+BUCKET_NAME = "crypto-sniper-bot-logs"
+if storage:
+    try:
+        storage_client = storage.Client()
+    except Exception as e:
+        logger.error(f"Cloud Storage initialization failed: {str(e)}")
+
 def save_csv_to_gcs(csv_path, bucket_name, destination_blob_name):
     if storage_client:
         try:
@@ -57,7 +61,6 @@ def save_csv_to_gcs(csv_path, bucket_name, destination_blob_name):
         except Exception as e:
             logger.error(f"Error saving CSV to GCS: {str(e)}")
 
-# Log signal to CSV
 def log_signal_to_csv(signal):
     try:
         csv_path = "logs/signals_log_new.csv"
@@ -103,7 +106,6 @@ def log_signal_to_csv(signal):
     except Exception as e:
         logger.error(f"Error logging signal to CSV: {str(e)}")
 
-# Archive logs older than 7 days
 def archive_old_logs(csv_path):
     try:
         if not os.path.exists(csv_path):
@@ -129,7 +131,6 @@ def archive_old_logs(csv_path):
     except Exception as e:
         logger.error(f"Error archiving logs: {str(e)}")
 
-# Convert timestamp to PKT
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00').split('+00:00+')[0])
