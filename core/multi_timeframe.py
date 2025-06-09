@@ -1,9 +1,8 @@
 # Multi-timeframe agreement logic for signal validation
-# Merged from: analysis.py (multi-timeframe agreement logic)
 # Changes:
-# - Consolidated timeframe agreement check from analysis.py
-# - Integrated with indicators.py for indicator calculations
-# - Ensured async compatibility with engine.py
+# - Increased agreement threshold from 2/4 to 3/4 timeframes
+# - Enhanced logging for agreement count
+# - Optimized for Cloud Run async compatibility
 
 import pandas as pd
 import asyncio
@@ -12,7 +11,7 @@ from data.collector import fetch_realtime_data
 from utils.logger import logger
 
 async def check_multi_timeframe_agreement(symbol: str, direction: str, timeframes: list) -> bool:
-    # Check if at least 2/4 timeframes agree on signal direction
+    # Check if at least 3/4 timeframes agree on signal direction
     try:
         agreement_count = 0
         for timeframe in timeframes:
@@ -43,9 +42,9 @@ async def check_multi_timeframe_agreement(symbol: str, direction: str, timeframe
             elif direction == "SHORT" and is_bearish:
                 agreement_count += 1
 
-        # Require at least 2/4 timeframes to agree
-        agreement = agreement_count >= 2
-        logger.info(f"[{symbol}] Multi-timeframe agreement: {agreement_count}/4 timeframes for {direction}")
+        # Require at least 3/4 timeframes to agree
+        agreement = agreement_count >= 3
+        logger.info(f"[{symbol}] Multi-timeframe agreement: {agreement_count}/4 timeframes for {direction}, Result: {agreement}")
         return agreement
     except Exception as e:
         logger.error(f"[{symbol}] Error in multi-timeframe agreement: {str(e)}")
