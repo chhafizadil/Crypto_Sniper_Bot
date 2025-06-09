@@ -1,11 +1,12 @@
 # Main script for Crypto Signal Bot with Telegram integration
-# Fixes:
-# - Fixed syntax errors (quotes, brackets)
-# - Fixed json.dump syntax
-# - Corrected determine_leverage logic
-# - Fixed predictor syntax
-# - Fixed de_json_from_json to de_json
-# - Added polling fallback for Replit
+# Changes:
+# - Set MIN_VOLUME to 500,000 USD
+# - Added continuous scanning loop for all USDT pairs
+# - Implemented 5-minute pause between scan cycles
+# - Added 4-hour cooldown check using is_cooldown_active
+# - Stored last_signal_times in memory for Cloud Run
+# - Removed webhook, defaulted to polling
+# - Handled $PORT for Cloud Run (default 8080)
 
 import telegram
 import asyncio
@@ -23,7 +24,7 @@ from typing import Set, Dict
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
 from utils.logger import logger
-from utils.helpers import get_timestamp, format_timestamp
+from utils.helpers import get_timestamp, format_timestamp, is_cooldown_active, scan_pause
 from model.predictor import SignalPredictor
 from telebot.sender import send_signal, update_signal_log
 from telebot.report_generator import generate_daily_summary
@@ -36,39 +37,18 @@ BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
 CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', '')
-PORT = int(os.getenv('PORT', 8000))
-MIN_VOLUME = 2_000_000
-MAX_SIGNALS_PER_MINUTE = 1
-CYCLE_INTERVAL = 600
+PORT = int(os.getenv('PORT', 8080))  # Default to 8080 for Cloud Run
+MIN_VOLUME = 500_000  # Updated to 500,000 USD
+MAX_SIGNALS_PER_MINUTE = 10  # Increased for unlimited signals
+CYCLE_INTERVAL = 300  # 5-minute pause between cycles
 BATCH_SIZE = 5
-COOLDOWN = 6 * 3600
-SIGNAL_TIME_FILE = 'logs/last_signal_times.json'
+COOLDOWN = 4 * 3600  # 4-hour cooldown
 
 scanned_symbols: Set[str] = set()
-last_signal_time: Dict[str, datetime] = {}
-
-def load_signal_times():
-    try:
-        if os.path.exists(SIGNAL_TIME_FILE):
-            with open(SIGNAL_TIME_FILE, 'r') as f:
-                data = json.load(f)
-            return {k: datetime.fromisoformat(v) for k, v in data.items()}
-        return {}
-    except Exception as e:
-        logger.error(f"Error loading signal times: {str(e)}")
-        return {}
-
-def save_signal_times():
-    try:
-        os.makedirs('logs', exist_ok=True)
-        with open(SIGNAL_TIME_FILE, 'w') as f:
-            json.dump({k: v.isoformat() for k, v in last_signal_time.items()}, f)
-        logger.info("Saved signal times")
-    except Exception as e:
-        logger.error(f"Error saving signal times: {str(e)}")
+last_signal_time: Dict[str, datetime] = {}  # Stored in memory for Cloud Run
 
 def format_timestamp_to_pk(utc_timestamp_str):
+    # Convert UTC timestamp to PKT
     try:
         utc_time = datetime.fromisoformat(utc_timestamp_str.replace('Z', '+00:00').split('+00:00+')[0])
         utc_time = utc_time.replace(tzinfo=pytz.UTC)
@@ -79,6 +59,7 @@ def format_timestamp_to_pk(utc_timestamp_str):
         return utc_timestamp_str
 
 def determine_leverage(indicators):
+    # Determine leverage based on indicator strength
     score = 0
     if isinstance(indicators, str):
         indicators = indicators.split(', ')
@@ -93,6 +74,7 @@ def determine_leverage(indicators):
     return '40x' if score >= 5 else '30x' if score >= 3 else '20x' if score >= 1 else '10x'
 
 def get_24h_volume(symbol):
+    # Fetch 24-hour volume for a symbol
     try:
         symbol_clean = symbol.replace('/', '').upper()
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol_clean}"
@@ -105,17 +87,16 @@ def get_24h_volume(symbol):
         return 0, '$0.00'
 
 async def fetch_usdt_pairs(exchange):
+    # Fetch high-volume USDT pairs from Binance
     try:
         markets = await exchange.load_markets()
         symbols = [symbol for symbol in markets if symbol.endswith('USDT')]
         high_volume_symbols = []
-        for symbol in symbols[:50]:
+        for symbol in symbols:
             volume, _ = get_24h_volume(symbol)
             if volume > MIN_VOLUME:
                 high_volume_symbols.append(symbol)
-            if len(high_volume_symbols) >= 10:
-                break
-        logger.info(f"Found {len(high_volume_symbols)} USDT pairs: {high_volume_symbols}")
+        logger.info(f"Found {len(high_volume_symbols)} USDT pairs with volume > ${MIN_VOLUME:,}")
         return high_volume_symbols
     except Exception as e:
         logger.error(f"Error fetching USDT pairs: {str(e)}")
@@ -124,10 +105,11 @@ async def fetch_usdt_pairs(exchange):
         return []
 
 async def process_symbol(exchange, symbol):
+    # Process a single symbol for signal generation
     try:
         logger.info(f"[{symbol}] Scanning for signal")
         current_time = datetime.now(pytz.UTC)
-        if symbol in last_signal_time and (current_time - last_signal_time[symbol]).total_seconds() < COOLDOWN:
+        if is_cooldown_active(symbol, last_signal_time, COOLDOWN):  # Check 4-hour cooldown
             logger.info(f"[{symbol}] In cooldown")
             return None
 
@@ -171,13 +153,14 @@ async def process_symbol(exchange, symbol):
         logger.info(f"[{symbol}] Signal generated: {signal['direction']}, Confidence: {signal['confidence']:.2f}%")
         update_signal_log(symbol, signal, 'pending')
         await send_signal(symbol, signal, CHAT_ID)
-        last_signal_time[symbol] = current_time
+        last_signal_time[symbol] = current_time  # Update in-memory cooldown
         return signal
     except Exception as e:
         logger.error(f"[{symbol}] Error processing: {str(e)}")
         return None
 
 async def start(update, context):
+    # Start command handler
     try:
         await update.message.reply_text('Crypto Signal Bot is running! Use /help for commands.')
         logger.info('Start command executed')
@@ -185,6 +168,7 @@ async def start(update, context):
         logger.error(f"Error in start command: {str(e)}")
 
 async def help(update, context):
+    # Help command handler
     try:
         help_text = (
             '📋 Crypto Signal Bot Commands\n'
@@ -202,6 +186,7 @@ async def help(update, context):
         logger.error(f"Error in help command: {str(e)}")
 
 async def test(update, context):
+    # Test command handler
     try:
         await update.message.reply_text('Test message from Crypto Signal Bot!')
         logger.info('Test message sent')
@@ -209,15 +194,15 @@ async def test(update, context):
         logger.error(f"Error in test command: {str(e)}")
 
 async def status(update, context):
+    # Status command handler
     try:
         bot = telegram.Bot(token=BOT_TOKEN)
         bot_info = await bot.get_me()
-        webhook_info = await bot.get_webhook_info()
         status_text = (
             f"🟬 Bot running\n"
             f"🤖 @{bot_info.username}\n"
-            f"🌐 Webhook: {webhook_info.url or 'Not set'}\n"
-            f"📡 Pending updates: {webhook_info.pending_update_count or 0}"
+            f"📡 Symbols scanned: {len(scanned_symbols)}\n"
+            f"📈 Active signals: {len(last_signal_time)}"
         )
         await update.message.reply_text(status_text, parse_mode='Markdown')
         logger.info('Status command executed')
@@ -225,18 +210,14 @@ async def status(update, context):
         logger.error(f"Error in status: {str(e)}")
 
 async def signal(update, context):
+    # Signal command handler
     try:
-        file_path = 'logs/signals_log.csv'
-        if not os.path.exists(file_path):
+        if not hasattr(update_signal_log, 'signals_data') or not update_signal_log.signals_data:
             await update.message.reply_text('No signals available.')
             return
-        df = pd.read_csv(file_path)
-        if df.empty:
-            await update.message.reply_text('No signals available.')
-            return
-        latest_signal = df.iloc[-1].to_dict()
+        latest_signal = update_signal_log.signals_data[-1]
         conditions_str = (
-            ', '.join(eval(latest_signal['conditions']) if isinstance(latest_signal['conditions'], str) and latest_signal['conditions'].startswith('[') else latest_signal['conditions'].split(', '))
+            ', '.join(latest_signal['conditions'])
         )
 
         volume, volume_str = get_24h_volume(latest_signal['symbol'])
@@ -263,7 +244,7 @@ async def signal(update, context):
             f"🔍 Confidence: {latest_signal['confidence']:.2f}%\n"
             f"⚡ Type: {latest_signal['trade_type']}\n"
             f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}\n"
-            f"📈 Volume: ${latest_signal['volume']}:,.2f}\n"
+            f"📈 Volume: ${latest_signal['volume']:,.2f}\n"
             f"📈 24h Volume: ${latest_signal['quote_volume_24h']}\n"
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {latest_signal['timestamp']}"
@@ -274,6 +255,7 @@ async def signal(update, context):
         logger.error(f"Error handling signal: {str(e)}")
 
 async def summary(update, context):
+    # Summary command handler
     try:
         report = await generate_daily_summary()
         if report:
@@ -285,6 +267,7 @@ async def summary(update, context):
         logger.error(f"Error in summary: {str(e)}")
 
 async def report(update, context):
+    # Report command handler
     try:
         report = await generate_daily_summary()
         if report:
@@ -295,65 +278,10 @@ async def report(update, context):
     except Exception as e:
         logger.error(f"Error in report: {str(e)}")
 
-async def handle_health(request):
-    try:
-        logger.info(f"Health check: path={request.path}, method={request.method}")
-        return web.Response(status=200, text='OK')
-    except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        return web.Response(status=500, text='Error')
-
-async def handle_webhook(request):
-    try:
-        data = await request.json()
-        logger.info(f"Received webhook update: {data}")
-        update = telegram.Update.de_json(data=data, bot=telegram.Bot(token=BOT_TOKEN))
-        if update:
-            await application.process_update(update))
-            logger.info("Webhook update processed")
-            return web.json_response({'status': 'ok'})
-        logger.error('Invalid webhook update')
-        return None web.json_response({'error': 'invalid'}, status=400)
-    except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return web.json_response({'error': str(e)}, status=400)
-
 async def start_bot():
+    # Start the bot with polling
     global application, last_signal_time
     try:
-        os.makedirs('logs', exist_ok=True)
-
-        if WEBHOOK_URL:
-            app = web.Application()
-            app.add_routes([web.get('/health', handle_health)])
-            app.add_routes([web.get('/', handle_health)])
-            app.add_routes([web.post('/webhook', handle_webhook)])
-            runner = web.AppRunner(app)
-            tasks = await runner.setup()
-            site = await web.TCPSite(runner, '0.0.0.0', PORT)
-            await site.start()
-            logger.info(f"Server started on port {PORT}")
-            await asyncio.sleep(5)
-
-            bot = telegram.Bot(token=BOT_TOKEN)
-            await bot.delete_webhook(drop_pending_updates=True)
-            await bot.set_webhook(url=WEBHOOK_URL)
-            await bot.send_message(chat_id=CHAT_ID, text='✅ Bot started')
-            logger.info(f"Webhook set: {WEBHOOK_URL}")
-        else:
-            logger.info("No webhook, using polling")
-            application = Application.builder().token(BOT_TOKEN).build()
-            application.add_handler(CommandHandler('start', start))
-            application.add_handler(CommandHandler('help', help))
-            application.add_handler(CommandHandler('test', test))
-            application.add_handler(CommandHandler('status', status))
-            application.add_handler(CommandHandler('signal', signal))
-            application.add_handler(CommandHandler('summary', summary))
-            application.add_handler(CommandHandler('report', report))
-            await application.initialize()
-            await application.start()
-            await application.updater.start_polling()
-
         if not API_KEY or not API_SECRET:
             logger.error("Binance API key/secret missing")
             bot = telegram.Bot(token=BOT_TOKEN)
@@ -366,9 +294,21 @@ async def start_bot():
             'enableRateLimit': True
         })
 
-        last_signal_time = load_signal_times()
+        last_signal_time = {}  # Initialize in-memory cooldown
         signal_count = 0
         last_signal_minute = get_timestamp() // 60
+
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CommandHandler('help', help))
+        application.add_handler(CommandHandler('test', test))
+        application.add_handler(CommandHandler('status', status))
+        application.add_handler(CommandHandler('signal', signal))
+        application.add_handler(CommandHandler('summary', summary))
+        application.add_handler(CommandHandler('report', report))
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
 
         while True:
             try:
@@ -378,46 +318,39 @@ async def start_bot():
                     await asyncio.sleep(60)
                     continue
 
-                logger.info(f"Starting scan cycle for {len(signals)} symbols")
+                logger.info(f"Starting scan cycle for {len(symbols)} symbols")
                 for i in range(0, len(symbols), BATCH_SIZE):
                     batch = symbols[i:i + BATCH_SIZE]
-                    logger.info(f"Processing batch: {batch}")
-                    tasks = [process_symbol(exchange, symbol) for symbol in batch if symbol not in scanned_symbols]
+                    logger.debug(f"Processing batch: {batch}")
+                    tasks = [process_symbol(exchange, symbol) for symbol in batch if not is_cooldown_active(symbol, last_signal)]
                     results = await asyncio.gather(*tasks)
                     scanned_symbols.update(batch)
 
                     valid_signals = [r for r in results if r]
                     if valid_signals:
-                        top_signal = max(valid_signals, key=lambda x: x['confidence'])
                         current_time = get_timestamp()
                         current_minute = current_time // 60
 
                         if current_minute > last_signal_minute:
                             signal_count = 0
-                            last_signal_minute = current_time
+                            last_signal_minute = current_minute
 
                         if signal_count >= MAX_SIGNALS_PER_MINUTE:
-                            logger.info("Max signals limit reached")
+                            logger.info("Max signals limit reached for this minute")
                             continue
 
                         signal_count += 1
-                        save_signal_times()
-                        logger.info(f"Signal processed for {top_signal['symbol']}")
+                        logger.info(f"Processed {len(valid_signals)} signals in batch")
 
                     await asyncio.sleep(5)
 
-                if len(scanned_symbols) >= len(symbols):
-                    current_time = datetime.now(pytz.UTC)
-                    scanned_symbols.clear()
-                    scanned_symbols.update(
-                        {s for s in signals if s in last_signal_time and (current_time - last_signal_time[s]).total_seconds() < COOLDOWN}
-                    )
-                    logger.info('Scan cycle completed')
-                await asyncio.sleep(CYCLE_INTERVAL)
+                scanned_symbols.clear()
+                logger.info("Scan cycle completed, pausing for 5 minutes")
+                await scan_pause(CYCLE_INTERVAL)  # 5-minute pause
 
             except Exception as e:
                 logger.error(f"Main loop error: {str(e)}")
-                await asyncio.sleep(30)
+                await asyncio.sleep(60)
 
         await exchange.close()
 
