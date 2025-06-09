@@ -1,6 +1,6 @@
 # ML model training for RandomForestClassifier
 # Changes:
-# - Removed Google Cloud Storage integration
+# - Fixed candle pattern detection to handle list output
 # - Optimized logging for Cloud Run
 # - Kept training data limit at 500 candles
 
@@ -11,7 +11,7 @@ from sklearn.model_selection import train_test_split
 from joblib import dump
 import os
 import asyncio
-from core.indicators import calculate_indicators, detect_candle_patterns
+from core.indicators import calculate_indicators
 from data.collector import fetch_realtime_data
 import logging
 
@@ -20,6 +20,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MODEL_PATH = "ml_models/rf_model.joblib"
+
+def detect_candle_patterns(df):
+    # Simplified candle pattern detection for training
+    patterns = []
+    for i in range(1, len(df)):
+        open_price = df['open'].iloc[i]
+        close_price = df['close'].iloc[i]
+        prev_close = df['close'].iloc[i-1]
+        pattern = []
+        if close_price > open_price and prev_close < open_price:
+            pattern.append('bullish_engulfing')
+        elif close_price < open_price and prev_close > open_price:
+            pattern.append('bearish_engulfing')
+        patterns.append(pattern)
+    return patterns
 
 async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int = 500):
     # Prepare training data for ML model
@@ -32,10 +47,10 @@ async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
 
-        df['bullish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'bullish_engulfing' in x else 0)
-        df['bearish_engulfing'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'bearish_engulfing' in x else 0)
-        df['doji'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'doji' in x else 0)
-        df['hammer'] = detect_candle_patterns(df).apply(lambda x: 1 if isinstance(x, list) and 'hammer' in x else 0)
+        # Add candle patterns as binary columns
+        patterns = detect_candle_patterns(df)
+        df['bullish_engulfing'] = [1 if 'bullish_engulfing' in p else 0 for p in patterns] + [0]
+        df['bearish_engulfing'] = [1 if 'bearish_engulfing' in p else 0 for p in patterns] + [0]
 
         df["label"] = 0
         for i in range(len(df) - 10):
@@ -48,7 +63,7 @@ async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int 
         features = [
             "rsi", "macd", "macd_signal", "atr", "adx", "volume_sma_20",
             "bollinger_upper", "bollinger_lower", "stoch_k", "vwap",
-            "bullish_engulfing", "bearish_engulfing", "doji", "hammer"
+            "bullish_engulfing", "bearish_engulfing"
         ]
         X = df[features]
         y = df["label"]
