@@ -1,10 +1,17 @@
+# Data collector for fetching real-time OHLCV data from Binance
+# Changes:
+# - Removed fetch_usdt_pairs (moved to main.py)
+# - Optimized fetch_realtime_data for all USDT pairs
+# - Ensured rate limiting for Binance API
+# - Enhanced logging for Cloud Run
+
 import pandas as pd
 import numpy as np
 import ccxt.async_support as ccxt
 from utils.logger import logger
 
 async def fetch_realtime_data(symbol: str, timeframe: str, limit: int = 50) -> pd.DataFrame:
-    """Fetch real-time OHLCV data from Binance."""
+    # Fetch real-time OHLCV data from Binance
     try:
         exchange = ccxt.binance({
             'enableRateLimit': True,
@@ -25,11 +32,11 @@ async def fetch_realtime_data(symbol: str, timeframe: str, limit: int = 50) -> p
         await exchange.close()
 
 def calculate_ema(series, period):
-    """Manual EMA calculation to avoid library issues"""
+    # Manual EMA calculation to avoid library issues
     return series.ewm(span=period, adjust=False).mean()
 
 def calculate_indicators(df):
-    """Calculate technical indicators for the given DataFrame."""
+    # Calculate technical indicators for the given DataFrame
     try:
         if not isinstance(df, pd.DataFrame):
             logger.error("Input is not a pandas DataFrame")
