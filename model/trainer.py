@@ -1,9 +1,3 @@
-# ML model training for RandomForestClassifier
-# Changes:
-# - Fixed candle pattern detection to handle list output
-# - Optimized logging for Cloud Run
-# - Kept training data limit at 500 candles
-
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
@@ -15,39 +9,35 @@ from core.indicators import calculate_indicators
 from data.collector import fetch_realtime_data
 import logging
 
-# Logger setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MODEL_PATH = "ml_models/rf_model.joblib"
 
 def detect_candle_patterns(df):
-    # Simplified candle pattern detection for training
     patterns = []
     for i in range(1, len(df)):
         open_price = df['open'].iloc[i]
         close_price = df['close'].iloc[i]
-        prev_close = df['close'].iloc[i-1]
+        prev_open = df['open'].iloc[i-1]
         pattern = []
-        if close_price > open_price and prev_close < open_price:
+        if close_price > open_price and prev_open < close_price:
             pattern.append('bullish_engulfing')
-        elif close_price < open_price and prev_close > open_price:
+        elif close_price < open_price and prev_open > open_price:
             pattern.append('bearish_engulfing')
         patterns.append(pattern)
     return patterns
 
 async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int = 500):
-    # Prepare training data for ML model
     try:
         ohlcv = await fetch_realtime_data(symbol, timeframe, limit)
         if ohlcv is None or len(ohlcv) < 360:
-            logger.warning(f"[{symbol}] Insufficient data for training")
+            logger.warning(f"[{symbol}] Insufficient data")
             return None, None
 
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
 
-        # Add candle patterns as binary columns
         patterns = detect_candle_patterns(df)
         df['bullish_engulfing'] = [1 if 'bullish_engulfing' in p else 0 for p in patterns] + [0]
         df['bearish_engulfing'] = [1 if 'bearish_engulfing' in p else 0 for p in patterns] + [0]
@@ -74,7 +64,6 @@ async def prepare_training_data(symbol: str, timeframe: str = '15m', limit: int 
         return None, None
 
 async def train_model(symbol: str, timeframe: str = '15m', limit: int = 500):
-    # Train RandomForestClassifier model
     try:
         X, y = await prepare_training_data(symbol, timeframe, limit)
         if X is None or y is None:
