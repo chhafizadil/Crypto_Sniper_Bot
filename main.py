@@ -295,7 +295,7 @@ async def start_bot():
             try:
                 symbols = await fetch_usdt_pairs(exchange)
                 if not symbols:
-                    logger.warning("No symbols found, retrying in 60s")
+                    logger.warning("No USDT pairs found, retrying in 60s")
                     await asyncio.sleep(60)
                     continue
 

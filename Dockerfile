@@ -15,7 +15,7 @@ COPY . .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Expose port 8080 (Cloud Run default)
-EXPOSE 8000
+EXPOSE 8080
 
 # Command to run the bot
 CMD ["python", "main.py"]
