@@ -1,3 +1,4 @@
+from telegram import Bot
 import asyncio
 import pandas as pd
 import os
