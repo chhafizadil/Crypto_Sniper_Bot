@@ -26,7 +26,7 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
 PORT = int(os.getenv('PORT', 8080))
-MIN_VOLUME = 100_000  # کم کیا گیا زیادہ سگنلز کے لیے
+MIN_VOLUME = 100_000
 MAX_SIGNALS_PER_MINUTE = 10
 CYCLE_INTERVAL = 300
 BATCH_SIZE = 5
@@ -111,34 +111,34 @@ async def process_symbol(exchange, symbol):
             logger.info(f"[{symbol}] Low volume: {volume_str}")
             return None
 
-        ticker = await exchange.fetch_ticker(symbol=symbol)
+        ticker = await exchange.fetch_ticker(symbol)
         if ticker['quoteVolume'] < MIN_VOLUME:
-            logger.info(f"[{symbol}] Low ticker volume: ${ticker['quoteVolume']]:.2f}")
+            logger.info(f"[{symbol}] Low ticker volume: ${ticker['quoteVolume']:.2f}")
             return None
 
         timeframes = ['15m', '1h', '4h', '1d']
         ohlcv_data = []
         for tf in timeframes:
-            ohlcv = await fetch_realtime_data(symbol=symbol, timeframe=tf, limit=50)
+            ohlcv = await fetch_realtime_data(symbol, tf, limit=50)
             if ohlcv is None or len(ohlcv) < 30:
-                logger.warning(f"[symbol{symbol}] Insufficient data for {tf}")
+                logger.warning(f"[{symbol}] Insufficient data for {tf}")
                 return None
-            df = pd.DataFrame.from_records(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)
             df = calculate_indicators(df)
-            ohlcv_data.append(df)]
+            ohlcv_data.append(df)
 
-        predictor = new SignalPredictor()
+        predictor = SignalPredictor()
         signal = await predictor.predict_signal(symbol, ohlcv_data[0], '15m')
-        if not signal or signal['confidence'] < 50.0:  # کم کیا گیا زیادہ سگنلز کے لیے
+        if not signal or signal['confidence'] < 50.0:
             logger.info(f"[{symbol}] No signal or low confidence")
             return None
 
         if signal['tp1'] == signal['tp2'] == signal['tp3'] == signal['entry']:
-            logger.info(f"[symbol{symbol}] Identical TP/entry values")
+            logger.info(f"[{symbol}] Identical TP/entry values")
             return None
 
         if not await check_multi_timeframe_agreement(symbol, signal['direction'], timeframes):
-            logger.info(f"[symbol]{symbol}] No multi-timeframe agreement")
+            logger.info(f"[{symbol}] No multi-timeframe agreement")
             return None
 
         signal['quote_volume_24h'] = volume_str
