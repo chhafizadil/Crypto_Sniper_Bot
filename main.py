@@ -1,4 +1,3 @@
-from telegram import Bot
 import asyncio
 import pandas as pd
 import os
@@ -7,6 +6,7 @@ import requests
 import numpy as np
 from datetime import datetime, timedelta
 from fastapi import FastAPI
+from telegram import Bot
 from telegram.ext import Application, CommandHandler
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
@@ -26,7 +26,7 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
 PORT = int(os.getenv('PORT', 8080))
-MIN_VOLUME = 500_000
+MIN_VOLUME = 100_000  # کم کیا گیا زیادہ سگنلز کے لیے
 MAX_SIGNALS_PER_MINUTE = 10
 CYCLE_INTERVAL = 300
 BATCH_SIZE = 5
@@ -94,7 +94,7 @@ async def fetch_usdt_pairs(exchange):
         return high_volume_symbols
     except Exception as e:
         logger.error(f"Error fetching USDT pairs: {str(e)}")
-        bot = telegram.Bot(token=BOT_TOKEN)
+        bot = Bot(token=BOT_TOKEN)
         await bot.send_message(chat_id=CHAT_ID, text=f"⚠ Binance API error: {str(e)}")
         return []
 
@@ -111,34 +111,34 @@ async def process_symbol(exchange, symbol):
             logger.info(f"[{symbol}] Low volume: {volume_str}")
             return None
 
-        ticker = await exchange.fetch_ticker(symbol)
+        ticker = await exchange.fetch_ticker(symbol=symbol)
         if ticker['quoteVolume'] < MIN_VOLUME:
-            logger.info(f"[{symbol}] Low ticker volume: ${ticker['quoteVolume']:.2f}")
+            logger.info(f"[{symbol}] Low ticker volume: ${ticker['quoteVolume']]:.2f}")
             return None
 
         timeframes = ['15m', '1h', '4h', '1d']
         ohlcv_data = []
         for tf in timeframes:
-            ohlcv = await fetch_realtime_data(symbol, tf, limit=50)
+            ohlcv = await fetch_realtime_data(symbol=symbol, timeframe=tf, limit=50)
             if ohlcv is None or len(ohlcv) < 30:
-                logger.warning(f"[{symbol}] Insufficient data for {tf}")
+                logger.warning(f"[symbol{symbol}] Insufficient data for {tf}")
                 return None
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)
+            df = pd.DataFrame.from_records(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']).astype(np.float32)
             df = calculate_indicators(df)
-            ohlcv_data.append(df)
+            ohlcv_data.append(df)]
 
-        predictor = SignalPredictor()
+        predictor = new SignalPredictor()
         signal = await predictor.predict_signal(symbol, ohlcv_data[0], '15m')
-        if not signal or signal['confidence'] < 70.0:
+        if not signal or signal['confidence'] < 50.0:  # کم کیا گیا زیادہ سگنلز کے لیے
             logger.info(f"[{symbol}] No signal or low confidence")
             return None
 
         if signal['tp1'] == signal['tp2'] == signal['tp3'] == signal['entry']:
-            logger.info(f"[{symbol}] Identical TP/entry values")
+            logger.info(f"[symbol{symbol}] Identical TP/entry values")
             return None
 
         if not await check_multi_timeframe_agreement(symbol, signal['direction'], timeframes):
-            logger.info(f"[{symbol}] No multi-timeframe agreement")
+            logger.info(f"[symbol]{symbol}] No multi-timeframe agreement")
             return None
 
         signal['quote_volume_24h'] = volume_str
@@ -185,7 +185,7 @@ async def test(update, context):
 
 async def status(update, context):
     try:
-        bot = telegram.Bot(token=BOT_TOKEN)
+        bot = Bot(token=BOT_TOKEN)
         bot_info = await bot.get_me()
         status_text = (
             f"🟢 Bot running\n"
@@ -266,7 +266,7 @@ async def start_bot():
     try:
         if not API_KEY or not API_SECRET:
             logger.error("Binance API key/secret missing")
-            bot = telegram.Bot(token=BOT_TOKEN)
+            bot = Bot(token=BOT_TOKEN)
             await bot.send_message(chat_id=CHAT_ID, text="⚠️ API key missing")
             return
 
