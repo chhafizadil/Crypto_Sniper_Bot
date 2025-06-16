@@ -1,13 +1,16 @@
+import telegram
 import asyncio
 import pandas as pd
+import json
 import os
 import pytz
 import requests
 import numpy as np
 from datetime import datetime, timedelta
-from fastapi import FastAPI
-from telegram import Bot
 from telegram.ext import Application, CommandHandler
+from telegram.error import TelegramError
+from fastapi import FastAPI
+from typing import Set, Dict
 import ccxt.async_support as ccxt
 from dotenv import load_dotenv
 from utils.logger import logger
@@ -26,24 +29,20 @@ CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '')
 API_KEY = os.getenv('BINANCE_API_KEY')
 API_SECRET = os.getenv('BINANCE_API_SECRET')
 PORT = int(os.getenv('PORT', 8080))
-MIN_VOLUME = 100_000
+MIN_VOLUME = 500_000
 MAX_SIGNALS_PER_MINUTE = 10
 CYCLE_INTERVAL = 300
 BATCH_SIZE = 5
 COOLDOWN = 4 * 3600
 
-scanned_symbols = set()
-last_signal_time = {}
+scanned_symbols: Set[str] = set()
+last_signal_time: Dict[str, datetime] = {}
 
 app = FastAPI()
 
 @app.get("/")
 async def root():
     return {"message": "Crypto Signal Bot is running"}
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
 
 def format_timestamp_to_pk(utc_timestamp_str):
     try:
@@ -94,7 +93,7 @@ async def fetch_usdt_pairs(exchange):
         return high_volume_symbols
     except Exception as e:
         logger.error(f"Error fetching USDT pairs: {str(e)}")
-        bot = Bot(token=BOT_TOKEN)
+        bot = telegram.Bot(token=BOT_TOKEN)
         await bot.send_message(chat_id=CHAT_ID, text=f"⚠ Binance API error: {str(e)}")
         return []
 
@@ -129,7 +128,7 @@ async def process_symbol(exchange, symbol):
 
         predictor = SignalPredictor()
         signal = await predictor.predict_signal(symbol, ohlcv_data[0], '15m')
-        if not signal or signal['confidence'] < 50.0:
+        if not signal or signal['confidence'] < 70.0:
             logger.info(f"[{symbol}] No signal or low confidence")
             return None
 
@@ -143,6 +142,9 @@ async def process_symbol(exchange, symbol):
 
         signal['quote_volume_24h'] = volume_str
         signal['leverage'] = determine_leverage(signal['conditions'])
+        signal['tp1_profit'] = ((signal['tp1'] - signal['entry']) / signal['entry'] * 100) if signal['direction'] == 'buy' else ((signal['entry'] - signal['tp1']) / signal['entry'] * 100)
+        signal['tp2_profit'] = ((signal['tp2'] - signal['entry']) / signal['entry'] * 100) if signal['direction'] == 'buy' else ((signal['entry'] - signal['tp2']) / signal['entry'] * 100)
+        signal['tp3_profit'] = ((signal['tp3'] - signal['entry']) / signal['entry'] * 100) if signal['direction'] == 'buy' else ((signal['entry'] - signal['tp3']) / signal['entry'] * 100)
         logger.info(f"[{symbol}] Signal generated: {signal['direction']}, Confidence: {signal['confidence']:.2f}%")
         update_signal_log(symbol, signal, 'pending')
         await send_signal(symbol, signal, CHAT_ID)
@@ -185,10 +187,10 @@ async def test(update, context):
 
 async def status(update, context):
     try:
-        bot = Bot(token=BOT_TOKEN)
+        bot = telegram.Bot(token=BOT_TOKEN)
         bot_info = await bot.get_me()
         status_text = (
-            f"🟢 Bot running\n"
+            f"🟬 Bot running\n"
             f"🤖 @{bot_info.username}\n"
             f"📡 Symbols scanned: {len(scanned_symbols)}\n"
             f"📈 Active signals: {len(last_signal_time)}"
@@ -216,25 +218,25 @@ async def signal(update, context):
         latest_signal['timestamp'] = format_timestamp_to_pk(latest_signal['timestamp'])
 
         message = (
-            f"📈 Trading signal\n"
+            f"📈 Trading Signal\n"
             f"💱 Symbol: {latest_signal['symbol']}\n"
             f"📊 Direction: {latest_signal['direction']}\n"
             f"⏰ Timeframe: {latest_signal['timeframe']}\n"
             f"⏳ Duration: {latest_signal['trade_duration']}\n"
             f"💰 Entry: ${latest_signal['entry_price']:.2f}\n"
-            f"🎯 TP1: ${latest_signal['tp1']:.2f} ({latest_signal['tp1_possibility']:.2f}%)\n"
-            f"🎯 TP2: ${latest_signal['tp2']:.2f} ({latest_signal['tp2_possibility']:.2f}%)\n"
-            f"🎯 TP3: ${latest_signal['tp3']:.2f} ({latest_signal['tp3_possibility']:.2f}%)\n"
+            f"🎯 TP1: ${latest_signal['tp1']:.2f} ({latest_signal['tp1_profit']:.2f}%)\n"
+            f"🎯 TP2: ${latest_signal['tp2']:.2f} ({latest_signal['tp2_profit']:.2f}%)\n"
+            f"🎯 TP3: ${latest_signal['tp3']:.2f} ({latest_signal['tp3_profit']:.2f}%)\n"
             f"🛑 SL: ${latest_signal['sl']:.2f}\n"
             f"🔍 Confidence: {latest_signal['confidence']:.2f}%\n"
             f"⚡ Type: {latest_signal['trade_type']}\n"
             f"⚖ Leverage: {latest_signal.get('leverage', 'N/A')}\n"
-            f"📈 Volume: ${latest_signal['volume']:.2f}\n"
-            f"📈 24h Volume: {latest_signal['quote_volume_24h']}\n"
+            f"📈 Volume: ${latest_signal['volume']:,.2f}\n"
+            f"📈 24h Volume: ${latest_signal['quote_volume_24h']}\n"
             f"🔎 Indicators: {conditions_str}\n"
             f"🕒 Timestamp: {latest_signal['timestamp']}"
         )
-        await update.message.reply_text(message, parse_mode='markdown')
+        await update.message.reply_text(message, parse_mode='Markdown')
         logger.info('Signal command executed')
     except Exception as e:
         logger.error(f"Error handling signal: {str(e)}")
@@ -243,7 +245,7 @@ async def summary(update, context):
     try:
         report = await generate_daily_summary()
         if report:
-            await update.message.reply_text(report, parse_mode='markdown')
+            await update.message.reply_text(report, parse_mode='Markdown')
         else:
             await update.message.reply_text('No signals available.')
         logger.info('Summary command executed')
@@ -254,7 +256,7 @@ async def report(update, context):
     try:
         report = await generate_daily_summary()
         if report:
-            await update.message.reply_text(report, parse_mode='markdown')
+            await update.message.reply_text(report, parse_mode='Markdown')
         else:
             await update.message.reply_text('No signals available.')
         logger.info('Report command executed')
@@ -266,8 +268,8 @@ async def start_bot():
     try:
         if not API_KEY or not API_SECRET:
             logger.error("Binance API key/secret missing")
-            bot = Bot(token=BOT_TOKEN)
-            await bot.send_message(chat_id=CHAT_ID, text="⚠️ API key missing")
+            bot = telegram.Bot(token=BOT_TOKEN)
+            await bot.send_message(chat_id=CHAT_ID, text="⚠️ API key/secret missing")
             return
 
         exchange = ccxt.binance({
@@ -290,13 +292,14 @@ async def start_bot():
         application.add_handler(CommandHandler('report', report))
         await application.initialize()
         await application.start()
-        await application.updater.start_polling()
+        await application.updater.start_polling(drop_pending_updates=True)
 
+        logger.info("Bot started, fetching USDT pairs...")
         while True:
             try:
                 symbols = await fetch_usdt_pairs(exchange)
                 if not symbols:
-                    logger.warning("No USDT pairs found, retrying in 60s")
+                    logger.warning("No USDT pairs, retrying in 60s")
                     await asyncio.sleep(60)
                     continue
 
@@ -304,11 +307,7 @@ async def start_bot():
                 for i in range(0, len(symbols), BATCH_SIZE):
                     batch = symbols[i:i + BATCH_SIZE]
                     logger.debug(f"Processing batch: {batch}")
-                    tasks = [
-                        process_symbol(exchange, symbol)
-                        for symbol in batch
-                        if not is_cooldown_active(symbol, last_signal_time, COOLDOWN)
-                    ]
+                    tasks = [process_symbol(exchange, symbol) for symbol in batch if not is_cooldown_active(symbol, last_signal_time, COOLDOWN)]
                     results = await asyncio.gather(*tasks)
                     scanned_symbols.update(batch)
 
@@ -322,10 +321,10 @@ async def start_bot():
                             last_signal_minute = current_minute
 
                         if signal_count >= MAX_SIGNALS_PER_MINUTE:
-                            logger.info("Max signals limit reached")
+                            logger.info("Max signals limit reached for this minute")
                             continue
 
-                        signal_count += len(valid_signals)
+                        signal_count += 1
                         logger.info(f"Processed {len(valid_signals)} signals in batch")
 
                     await asyncio.sleep(5)
@@ -343,10 +342,6 @@ async def start_bot():
     except Exception as e:
         logger.error(f"Bot startup error: {str(e)}")
         raise
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(start_bot())
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=PORT)
